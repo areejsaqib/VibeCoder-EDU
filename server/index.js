@@ -750,7 +750,7 @@ function collectProjectFiles(
 
 app.post(
   "/api/project/suggest-context",
-  (req, res) => {
+  async (req, res) => {
     try {
       const prompt =
         String(
@@ -763,14 +763,40 @@ app.post(
         });
       }
 
-      const files =
-        collectProjectFiles(
-          PROJECT_ROOT
-        );
+      const response = await fetch(
+        "https://api.github.com/repos/areejsaqib/VibeCoder-EDU/git/trees/master?recursive=1"
+      );
 
-      /*
-        Map every file to one suggestion.
-      */
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load project files from GitHub."
+        );
+      }
+
+      const data =
+        await response.json();
+
+      const files =
+        data.tree
+          .filter(
+            (item) =>
+              item.type === "blob"
+          )
+          .map(
+            (item) =>
+              item.path
+          )
+          .filter(
+            (filePath) =>
+              !filePath
+                .split("/")
+                .some((part) =>
+                  IGNORED_NAMES.has(
+                    part
+                  )
+                )
+          );
+
       const scoredFiles =
         files
           .map((filePath) => {
@@ -791,7 +817,8 @@ app.post(
                 normalizedPath
               ),
               score: result.score,
-              reason: result.reason,
+              reason:
+                result.reason,
             };
           })
           .filter(
@@ -803,21 +830,6 @@ app.post(
               b.score - a.score
           );
 
-      /*
-        Final hard deduplication.
-
-        Map key:
-        lowercase normalized path
-
-        This means:
-        App.css
-        app.css
-        src/App.css
-        src\\App.css
-
-        cannot appear twice if they resolve
-        to the same project-relative path.
-      */
       const uniqueSuggestions =
         new Map();
 
@@ -841,15 +853,6 @@ app.post(
         }
       }
 
-      /*
-        Return only the top 3 unique files.
-        For a simple styling request this
-        should normally give us:
-
-        1. App.css
-        2. index.css
-        3. App.tsx
-      */
       const suggestions =
         Array.from(
           uniqueSuggestions.values()
