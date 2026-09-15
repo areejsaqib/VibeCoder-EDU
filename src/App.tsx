@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ReactElement } from "react";
 import "./App.css";
-
+const API_BASE_URL = "https://vibecoder-edu-backend.vercel.app";
 type Mode = "vibe" | "education" | "safe";
 
 type ProjectItem =
@@ -134,12 +134,12 @@ function App() {
 
     try {
       const response = await fetch(
-        `http://localhost:3001/api/project/file?path=${encodeURIComponent(
-          filePath
-        )}`
-      );
+  `${API_BASE_URL}/api/project/file?path=${encodeURIComponent(
+    filePath
+  )}`
+);
 
-      if (!response.ok) {
+if (!response.ok) {
         throw new Error("Unable to read file.");
       }
 
@@ -288,7 +288,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/project"
+        "http://vibecoder-edu-backend.vercel.app/api/project"
       );
 
       if (!response.ok) {
@@ -337,8 +337,8 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/project/file?path=" +
-          encodeURIComponent(selectedFile)
+        `${API_BASE_URL}/api/project/file?path=` +
+  encodeURIComponent(selectedFile)
       );
 
       if (!response.ok) {
@@ -406,7 +406,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/project/suggest-context",
+        `${API_BASE_URL}/api/project/suggest-context`,
         {
           method: "POST",
           headers: {
@@ -532,7 +532,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/agent/plan",
+        `${API_BASE_URL}/api/agent/plan`,
         {
           method: "POST",
           headers: {
@@ -629,7 +629,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/agent/debug",
+        `${API_BASE_URL}/api/agent/debug`,
         {
           method: "POST",
           headers: {
@@ -767,7 +767,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/agent/changes",
+       `${API_BASE_URL}/api/agent/changes`,
         {
           method: "POST",
           headers: {
@@ -858,7 +858,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/agent/apply",
+        `${API_BASE_URL}/api/agent/apply`,
         {
           method: "POST",
           headers: {
@@ -949,7 +949,7 @@ function App() {
 
     try {
       const response = await fetch(
-        "http://localhost:3001/api/chat",
+        `${API_BASE_URL}/api/chat`,
         {
           method: "POST",
           headers: {
@@ -1511,8 +1511,8 @@ function App() {
   if (!alreadyAdded) {
     try {
       const response = await fetch(
-        `http://localhost:3001/api/project/file?path=${encodeURIComponent(file.path)}`
-      );
+  `${API_BASE_URL}/api/project/file?path=${encodeURIComponent(file.path)}`
+);
 
       const data = await response.json();
 
