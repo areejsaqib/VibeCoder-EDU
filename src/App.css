@@ -2284,3 +2284,28 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* vibecoder-safe-dark-mode */
+.vibecoder-safe-dark-mode {
+  background: #111827;
+  color: #f9fafb;
+}
+
+.vibecoder-safe-dark-mode .panel,
+.vibecoder-safe-dark-mode .builder-card {
+  background: #1f2937;
+  color: #f9fafb;
+}
+
+
+/* VibeCoder EDU — Safe Mode dark blue */
+.vibecoder-safe-dark-blue {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.vibecoder-safe-dark-blue .panel,
+.vibecoder-safe-dark-blue .builder-card {
+  background: #1e293b;
+  color: #f8fafc;
+}

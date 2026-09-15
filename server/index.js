@@ -1,3 +1,6 @@
+require("dotenv").config({ path: __dirname + "/.env" });
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+console.log("Gemini API key loaded:", Boolean(process.env.GEMINI_API_KEY));
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -5,13 +8,14 @@ const path = require("path");
 
 const app = express();
 
-app.use(cors());
-app.use(express.json({ limit: "2mb" }));
-
 const PORT = 3001;
-const OLLAMA_URL = "http://localhost:11434/api/generate";
-const OLLAMA_MODEL = "qwen2.5-coder:3b-instruct";
-const PROJECT_ROOT = path.resolve(__dirname, "..");
+const OLLAMA_URL =
+  "http://localhost:11434/api/generate";
+const OLLAMA_MODEL =
+  "qwen2.5-coder:3b-instruct";
+
+const PROJECT_ROOT =
+  path.resolve(__dirname, "..");
 
 const IGNORED_NAMES = new Set([
   "node_modules",
@@ -20,2058 +24,2450 @@ const IGNORED_NAMES = new Set([
   "build",
   ".next",
   ".vite",
+  "VibeCoder-EDU_BACKUPS",
+  "backups",
+  "backup",
 ]);
 
-/* ============================================================
+app.use(cors());
+app.use(
+  express.json({
+    limit: "2mb",
+  })
+);
+
+/* =========================================================
    PATH HELPERS
-   ============================================================ */
+========================================================= */
 
-function normalizePath(p) {
-  return String(p || "")
+function normalizePath(value = "") {
+  return String(value)
     .replace(/\\/g, "/")
-    .replace(/^\/+/, "");
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .trim();
 }
 
-function getFullProjectPath(p) {
-  const n = normalizePath(p);
+function canonicalPath(value = "") {
+  return normalizePath(value)
+    .toLowerCase();
+}
+
+function getFullProjectPath(
+  relativePath = ""
+) {
+  return path.resolve(
+    PROJECT_ROOT,
+    normalizePath(relativePath)
+  );
+}
+
+function isSafeProjectPath(
+  relativePath = ""
+) {
+  const normalized =
+    normalizePath(relativePath);
+
+  if (!normalized) {
+    return false;
+  }
 
   if (
-    !n ||
-    n === ".." ||
-    n.startsWith("../") ||
-    path.isAbsolute(n)
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    normalized.includes("/../")
   ) {
-    return null;
+    return false;
   }
 
-  const full = path.resolve(PROJECT_ROOT, n);
+  const fullPath =
+    getFullProjectPath(normalized);
 
-  if (
-    full !== PROJECT_ROOT &&
-    !full.startsWith(PROJECT_ROOT + path.sep)
-  ) {
-    return null;
-  }
-
-  return full;
-}
-
-function isSafeProjectPath(p) {
-  return Boolean(getFullProjectPath(p));
-}
-
-function getProjectRelativePath(p) {
-  return normalizePath(path.relative(PROJECT_ROOT, p));
-}
-
-/* ============================================================
-   PROJECT FILES
-   ============================================================ */
-
-function collectProjectFiles(dir = PROJECT_ROOT) {
-  if (!fs.existsSync(dir)) return [];
-
-  const out = [];
-
-  for (const e of fs.readdirSync(dir, {
-    withFileTypes: true,
-  })) {
-    if (IGNORED_NAMES.has(e.name)) continue;
-
-    const full = path.join(dir, e.name);
-
-    if (e.isDirectory()) {
-      out.push(...collectProjectFiles(full));
-    } else if (e.isFile()) {
-      out.push(getProjectRelativePath(full));
-    }
-  }
-
-  return out.sort();
-}
-
-function buildProjectTree(dir = PROJECT_ROOT) {
-  if (!fs.existsSync(dir)) return [];
-
-  return fs
-    .readdirSync(dir, {
-      withFileTypes: true,
-    })
-    .filter((e) => !IGNORED_NAMES.has(e.name))
-    .sort((a, b) =>
-      a.isDirectory() === b.isDirectory()
-        ? a.name.localeCompare(b.name)
-        : a.isDirectory()
-        ? -1
-        : 1
+  return (
+    fullPath === PROJECT_ROOT ||
+    fullPath.startsWith(
+      PROJECT_ROOT + path.sep
     )
-    .map((e) => {
-      const full = path.join(dir, e.name);
-      const rel = getProjectRelativePath(full);
+  );
+}
 
-      return e.isDirectory()
-        ? {
-            name: e.name,
-            path: rel,
-            type: "folder",
-            children: buildProjectTree(full),
-          }
-        : {
-            name: e.name,
-            path: rel,
-            type: "file",
-          };
+function getProjectRelativePath(
+  fullPath
+) {
+  return normalizePath(
+    path.relative(
+      PROJECT_ROOT,
+      fullPath
+    )
+  );
+}
+
+/* =========================================================
+   PROJECT TREE
+========================================================= */
+
+function buildProjectTree(
+  currentPath,
+  relativeBase = ""
+) {
+  let entries = [];
+
+  try {
+    entries = fs.readdirSync(
+      currentPath,
+      {
+        withFileTypes: true,
+      }
+    );
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter(
+      (entry) =>
+        !IGNORED_NAMES.has(
+          entry.name
+        )
+    )
+    .sort((a, b) => {
+      if (
+        a.isDirectory() !==
+        b.isDirectory()
+      ) {
+        return a.isDirectory()
+          ? -1
+          : 1;
+      }
+
+      return a.name.localeCompare(
+        b.name
+      );
+    })
+    .map((entry) => {
+      const absolutePath =
+        path.join(
+          currentPath,
+          entry.name
+        );
+
+      const relativePath =
+        normalizePath(
+          path.join(
+            relativeBase,
+            entry.name
+          )
+        );
+
+      if (entry.isDirectory()) {
+        return {
+          name: entry.name,
+          path: relativePath,
+          type: "folder",
+          children:
+            buildProjectTree(
+              absolutePath,
+              relativePath
+            ),
+        };
+      }
+
+      return {
+        name: entry.name,
+        path: relativePath,
+        type: "file",
+      };
     });
 }
 
-function readProjectFile(p) {
-  const full = getFullProjectPath(p);
+/* =========================================================
+   PROJECT FILE READING
+========================================================= */
 
+function readProjectFile(
+  relativePath
+) {
   if (
-    !full ||
-    !fs.existsSync(full) ||
-    !fs.statSync(full).isFile()
+    !isSafeProjectPath(
+      relativePath
+    )
   ) {
-    return null;
+    throw new Error(
+      "Unsafe project path."
+    );
   }
 
-  return fs.readFileSync(full, "utf8");
+  const fullPath =
+    getFullProjectPath(
+      relativePath
+    );
+
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(
+      "File does not exist."
+    );
+  }
+
+  const stat =
+    fs.statSync(fullPath);
+
+  if (!stat.isFile()) {
+    throw new Error(
+      "Requested path is not a file."
+    );
+  }
+
+  if (stat.size > 100 * 1024) {
+    throw new Error(
+      "File is too large to load."
+    );
+  }
+
+  return fs.readFileSync(
+    fullPath,
+    "utf8"
+  );
+}
+/* =========================================================
+   GEMINI
+========================================================= */
+
+async function callGemini(prompt, systemPrompt = "") {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Gemini API key is not configured.");
+  }
+
+  const response = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }],
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+  const errorText = await response.text();
+
+  if (response.status === 503) {
+    throw new Error(
+      "Gemini is temporarily busy. Please try again in a moment."
+    );
+  }
+
+  throw new Error(
+    `Gemini API error: ${response.status} ${errorText}`
+  );
 }
 
-/* ============================================================
+  const data = await response.json();
+
+  return (
+    data.candidates?.[0]?.content?.parts?.[0]?.text ||
+    "Gemini returned no response."
+  );
+}
+/* =========================================================
    OLLAMA
-   ============================================================ */
+========================================================= */
 
-async function callOllama(prompt, systemPrompt = "") {
-  const r = await fetch(OLLAMA_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      prompt,
-      system: systemPrompt,
-      stream: false,
-    }),
-  });
+async function callOllama(
+  prompt,
+  systemPrompt = ""
+) {
+  const response =
+    await fetch(
+      OLLAMA_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          prompt,
+          system: systemPrompt,
+          stream: false,
+          options: {
+            temperature: 0.2,
+            num_predict: 500,
+          },
+          keep_alive: "10m",
+        }),
+      }
+    );
 
-  if (!r.ok) {
-    throw new Error(`Ollama returned HTTP ${r.status}`);
+  if (!response.ok) {
+    const errorText =
+      await response.text();
+
+    throw new Error(
+      `Ollama request failed: ${errorText}`
+    );
   }
 
-  const data = await r.json();
+  const data =
+    await response.json();
 
   return data.response || "";
 }
 
-function extractJson(text) {
+/* =========================================================
+   JSON EXTRACTION
+========================================================= */
+
+function extractJson(
+  text = ""
+) {
+  const cleaned =
+    String(text)
+      .replace(
+        /```json/gi,
+        ""
+      )
+      .replace(
+        /```/g,
+        ""
+      )
+      .trim();
+
   try {
-    return JSON.parse(text);
+    return JSON.parse(cleaned);
   } catch {}
 
-  const m = String(text || "").match(/\{[\s\S]*\}/);
+  const objectStart =
+    cleaned.indexOf("{");
 
-  if (m) {
+  const objectEnd =
+    cleaned.lastIndexOf("}");
+
+  if (
+    objectStart !== -1 &&
+    objectEnd > objectStart
+  ) {
     try {
-      return JSON.parse(m[0]);
+      return JSON.parse(
+        cleaned.slice(
+          objectStart,
+          objectEnd + 1
+        )
+      );
+    } catch {}
+  }
+
+  const arrayStart =
+    cleaned.indexOf("[");
+
+  const arrayEnd =
+    cleaned.lastIndexOf("]");
+
+  if (
+    arrayStart !== -1 &&
+    arrayEnd > arrayStart
+  ) {
+    try {
+      return JSON.parse(
+        cleaned.slice(
+          arrayStart,
+          arrayEnd + 1
+        )
+      );
     } catch {}
   }
 
   return null;
 }
 
-/* ============================================================
+/* =========================================================
    HEALTH
-   ============================================================ */
+========================================================= */
 
-app.get("/api/health", (req, res) =>
-  res.json({
-    status: "ok",
-    message: "VibeCoder backend is running",
-  })
+app.get(
+  "/api/health",
+  (req, res) => {
+    res.json({
+      status: "ok",
+      message:
+        "VibeCoder backend is running",
+    });
+  }
 );
 
-/* ============================================================
-   PROJECT
-   ============================================================ */
+/* =========================================================
+   PROJECT API
+========================================================= */
 
-app.get("/api/project", (req, res) => {
-  try {
-    res.json({
-      success: true,
-      files: buildProjectTree(),
-    });
-  } catch (e) {
-    console.error(e);
+app.get(
+  "/api/project",
+  (req, res) => {
+    try {
+      const structure =
+        buildProjectTree(
+          PROJECT_ROOT
+        );
 
-    res.status(500).json({
-      success: false,
-      error: "Could not read project structure.",
-    });
+      res.json({
+        files: structure,
+        structure,
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message:
+          "Unable to scan project.",
+      });
+    }
   }
-});
+);
 
-app.get("/api/project/file", (req, res) => {
-  try {
-    const p = req.query.path;
+app.get(
+  "/api/project/file",
+  (req, res) => {
+    try {
+      const filePath =
+        String(
+          req.query.path || ""
+        );
 
-    if (!p) {
-      return res.status(400).json({
-        success: false,
-        error: "File path is required.",
+      const content =
+        readProjectFile(
+          filePath
+        );
+
+      res.json({
+        path: normalizePath(
+          filePath
+        ),
+        content,
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(400).json({
+        message:
+          error.message ||
+          "Unable to read project file.",
       });
     }
-
-    if (!isSafeProjectPath(p)) {
-      return res.status(400).json({
-        success: false,
-        error: "Unsafe file path.",
-      });
-    }
-
-    const content = readProjectFile(p);
-
-    if (content === null) {
-      return res.status(404).json({
-        success: false,
-        error: "File not found.",
-      });
-    }
-
-    res.json({
-      success: true,
-      path: normalizePath(p),
-      content,
-    });
-  } catch (e) {
-    console.error(e);
-
-    res.status(500).json({
-      success: false,
-      error: "Could not read file.",
-    });
   }
-});
+);
 
-/* ============================================================
+/* =========================================================
    SMART CONTEXT
-   ============================================================ */
+========================================================= */
 
-function isRequestAboutStyling(t) {
-  return /style|styling|css|layout|design|color|colour|background|font|text size|spacing|margin|padding|border|radius|responsive|appearance|theme|visual|look|ui|interface|section|button style|hover|shadow|alignment|sizing/i.test(
-    t
+function isRequestAboutStyling(
+  prompt = ""
+) {
+  return /\b(css|style|styling|design|background|color|colour|font|layout|spacing|padding|margin|button|ui|interface|dark mode|theme|responsive)\b/i.test(
+    prompt
   );
 }
 
-function isRequestAboutReact(t) {
-  return /react|component|jsx|tsx|frontend|button|form|hook|state|props|interface|ui|user interface|section/i.test(
-    t
+function isRequestAboutReact(
+  prompt = ""
+) {
+  return /\breact|component|jsx|tsx|useState|useEffect|props|hook\b/i.test(
+    prompt
   );
 }
 
-function isRequestAboutBackend(t) {
-  return /backend|server|express|api|endpoint|ollama|database|middleware|api response|backend response/i.test(
-    t
+function isRequestAboutBackend(
+  prompt = ""
+) {
+  return /\bbackend|server|express|api|endpoint|route|ollama|fetch|cors|node\b/i.test(
+    prompt
   );
 }
 
-function isRequestAboutLogic(t) {
-  return /logic|function|variable|bug|error|debug|condition|loop|async|await|promise|event|handler/i.test(
-    t
+function isRequestAboutLogic(
+  prompt = ""
+) {
+  return /\bfunction|logic|state|variable|array|object|condition|loop|event|handler|calculation\b/i.test(
+    prompt
   );
 }
 
-function isRequestAboutConfig(t) {
-  return /package|dependency|dependencies|npm|vite config|eslint|configuration|config|build config|typescript config/i.test(
-    t
+function isRequestAboutConfig(
+  prompt = ""
+) {
+  return /\bpackage\.json|vite|typescript|tsconfig|config|dependency|npm|build\b/i.test(
+    prompt
   );
 }
 
-function getSmartContextIntent(prompt) {
-  const t = String(prompt || "");
-
-  if (isRequestAboutStyling(t)) return "styling";
-  if (isRequestAboutBackend(t)) return "backend";
-  if (isRequestAboutConfig(t)) return "config";
-  if (isRequestAboutReact(t)) return "react";
-  if (isRequestAboutLogic(t)) return "logic";
-
-  return "general";
-}
-
-function scoreFile(file, intent) {
-  const n = normalizePath(file).toLowerCase();
-  let s = 0;
-
-  if (intent === "styling") {
-    if (n.endsWith("app.css")) s += 100;
-    if (n.endsWith(".css")) s += 70;
-    if (n.endsWith("app.tsx")) s += 50;
-    if (n.endsWith(".tsx")) s += 30;
-    if (n.includes("server/")) s -= 50;
-  }
-
-  if (intent === "backend") {
-    if (n === "server/index.js") s += 120;
-    if (n.startsWith("server/")) s += 80;
-    if (n.includes("api")) s += 40;
-    if (n.endsWith(".js")) s += 20;
-    if (n.endsWith(".css")) s -= 50;
-  }
-
-  if (intent === "config") {
-    if (n.endsWith("package.json")) s += 120;
-    if (n.includes("vite.config")) s += 100;
-    if (n.includes("tsconfig")) s += 90;
-    if (n.includes("eslint")) s += 80;
-  }
-
-  if (intent === "react") {
-    if (n.endsWith("app.tsx")) s += 120;
-    if (n.endsWith(".tsx")) s += 80;
-    if (n.endsWith(".jsx")) s += 70;
-    if (n.endsWith(".css")) s += 30;
-    if (n.startsWith("server/")) s -= 60;
-  }
-
-  if (intent === "logic") {
-    if (n.endsWith("app.tsx")) s += 100;
-    if (n.endsWith(".tsx")) s += 70;
-    if (n.endsWith(".ts")) s += 60;
-    if (n.endsWith(".js")) s += 60;
-    if (n.startsWith("server/")) s += 50;
-  }
-
-  if (intent === "general") {
-    if (n.endsWith("app.tsx")) s += 100;
-    if (n.endsWith(".tsx")) s += 60;
-    if (n === "server/index.js") s += 50;
-  }
-
-  return s;
-}
-
-app.post("/api/project/suggest-context", (req, res) => {
-  try {
-    const prompt = String(req.body?.prompt || "");
-    const files = collectProjectFiles();
-    const intent = getSmartContextIntent(prompt);
-
-    const suggestions = files
-      .map((file) => ({
-        path: file,
-        score: scoreFile(file, intent),
-      }))
-      .sort((a, b) => b.score - a.score)
-      .filter((x) => x.score > 0)
-      .slice(0, 5)
-      .map((x) => ({
-        path: x.path,
-        reason: "Relevant to your request",
-      }));
-
-    res.json({
-      success: true,
-      intent,
-      suggestions,
-    });
-  } catch (e) {
-    console.error(e);
-
-    res.status(500).json({
-      success: false,
-      error: "Could not suggest context files.",
-    });
-  }
-});
-
-/* ============================================================
-   EDUCATION MODE
-   ============================================================ */
-
-function educationFacts(source, filePath) {
-  const code = String(source || "");
-  const lines = code.split(/\r?\n/);
-  const nonEmpty = lines.filter((x) => x.trim());
-
-  const imports = [
-    ...code.matchAll(
-      /import\s+(.*?)\s+from\s+["'](.*?)["']/g
-    ),
-  ].map((m) => ({
-    imported: m[1],
-    from: m[2],
-  }));
-
-  const functions = [
-    ...code.matchAll(
-      /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g
-    ),
-  ].map((m) => m[1] || m[2]);
-
-  const states = [
-    ...code.matchAll(
-      /const\s*\[\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\]\s*=\s*useState\s*(?:<[^>]+>)?\s*\(/g
-    ),
-  ].map((m) => ({
-    value: m[1],
-    setter: m[2],
-  }));
-
-  const fetchCalls = [
-    ...code.matchAll(/fetch\s*\(/g),
-  ].length;
-
-  const responseJsonCalls = [
-    ...code.matchAll(/response\.json\s*\(/g),
-  ].length;
-
-  const asyncFunctions = [
-    ...code.matchAll(
-      /\basync\s+(?:function\s+)?([A-Za-z_$][\w$]*)/g
-    ),
-  ]
-    .map((m) => m[1])
-    .filter(Boolean);
-
-  const eventHandlers = [
-    ...code.matchAll(/\bon[A-Z][A-Za-z]+\s*=\s*/g),
-  ].map((m) => m[0].replace(/\s*=\s*$/, "").trim());
-
-  const endpoints = [
-    ...code.matchAll(
-      /https?:\/\/localhost:\d+\/api\/[A-Za-z0-9_?=&./-]+/g
-    ),
-  ].map((m) => m[0]);
-
-  const hasPromise =
-    /\bPromise\b|\bawait\b|\.then\s*\(/.test(code);
-
+function getSmartContextIntent(
+  prompt = ""
+) {
   return {
-    filePath,
-    lineCount: lines.length,
-    nonEmptyLineCount: nonEmpty.length,
-    imports,
-    functions: [...new Set(functions)],
-    states,
-    fetchCalls,
-    responseJsonCalls,
-    asyncFunctions: [...new Set(asyncFunctions)],
-    eventHandlers: [...new Set(eventHandlers)],
-    endpoints: [...new Set(endpoints)],
-    variableDeclarations: [
-      ...code.matchAll(
-        /\b(?:const|let|var)\s+[A-Za-z_$][\w$]*/g
+    styling:
+      isRequestAboutStyling(
+        prompt
       ),
-    ].length,
-    returnStatements: [
-      ...code.matchAll(/\breturn\b/g),
-    ].length,
-    conditionalCount: [
-      ...code.matchAll(/\bif\s*\(|\?.*:/g),
-    ].length,
-    loopCount: [
-      ...code.matchAll(
-        /\b(?:for|while)\s*\(|\.map\s*\(/g
+    react:
+      isRequestAboutReact(
+        prompt
       ),
-    ].length,
-    hasTryCatch: /try\s*\{[\s\S]*?catch\s*\(/.test(code),
-    hasJSX:
-      /<[A-Za-z][^>]*>/.test(code) &&
-      /<\/[A-Za-z][^>]*>/.test(code),
-    hasUseState: /\buseState\s*\(/.test(code),
-    hasPromise,
+    backend:
+      isRequestAboutBackend(
+        prompt
+      ),
+    logic:
+      isRequestAboutLogic(
+        prompt
+      ),
+    config:
+      isRequestAboutConfig(
+        prompt
+      ),
   };
 }
 
-function findState(facts, name) {
-  return facts.states.find((s) => s.value === name);
-}
+function scoreFile(
+  filePath,
+  prompt
+) {
+  const lowerPath =
+    filePath.toLowerCase();
 
-function extractModeRelationships(source) {
-  const code = String(source || "");
-  const out = [];
+  const intent =
+    getSmartContextIntent(
+      prompt
+    );
 
-  const stateMatch = code.match(
-    /const\s*\[\s*mode\s*,\s*setMode\s*\]\s*=\s*useState\s*(?:<[^>]+>)?\s*\(([^)]*)\)/
-  );
-
-  if (stateMatch) {
-    out.push({
-      type: "state",
-      text: `The mode state is initialized with ${
-        stateMatch[1].trim() || "a default value"
-      }, using setMode to update it.`,
-    });
-  }
-
-  const calls = [
-    ...code.matchAll(
-      /setMode\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g
-    ),
-  ].map((m) => m[1]);
-
-  if (calls.length) {
-    out.push({
-      type: "setters",
-      values: [...new Set(calls)],
-    });
-  }
-
-  const modeChecks = [
-    ...code.matchAll(
-      /mode\s*(?:===|==)\s*["'`]([^"'`]+)["'`]/g
-    ),
-  ].map((m) => m[1]);
-
-  if (modeChecks.length) {
-    out.push({
-      type: "checks",
-      values: [...new Set(modeChecks)],
-    });
-  }
-
-  const buttonBlocks = [
-    ...code.matchAll(
-      /<button\b[^>]*>[\s\S]*?<\/button>/gi
-    ),
-  ].map((m) => m[0]);
-
-  for (const b of buttonBlocks) {
-    if (/setMode\s*\(/.test(b)) {
-      const text = b
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\{[\s\S]*?\}/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      const sm = b.match(
-        /setMode\s*\(\s*["'`]([^"'`]+)["'`]/
-      );
-
-      if (sm) {
-        out.push({
-          type: "button",
-          label: text || "mode button",
-          value: sm[1],
-        });
-      }
-    }
-  }
-
-  return out;
-}
-
-function findRelevantCode(source, prompt) {
-  const code = String(source || "");
-  const t = String(prompt || "").toLowerCase();
-  const chunks = [];
+  let score = 0;
+  const reasons = [];
 
   if (
-    /mode|setmode|vibe coding|education mode|safe mode|button/.test(
-      t
+    intent.styling &&
+    /\.(css|scss|sass|less)$/i.test(
+      lowerPath
     )
   ) {
-    const rel = extractModeRelationships(code);
+    score += 10;
 
-    if (rel.length) {
-      chunks.push(...rel);
-    }
+    reasons.push(
+      "Styling-related file"
+    );
   }
 
-  if (/state|usestate/.test(t)) {
-    for (const s of educationFacts(code, "").states.slice(0, 8)) {
-      const re = new RegExp(
-        `(?:const\\s*\\[\\s*${s.value}\\s*,[\\s\\S]{0,80}|${s.setter}\\s*\\()[^\\n]*`
-      );
+  if (
+    intent.react &&
+    /\.(tsx|jsx)$/i.test(
+      lowerPath
+    )
+  ) {
+    score += 9;
 
-      const m = code.match(re);
-
-      chunks.push({
-        type: "stateDetail",
-        value: s.value,
-        setter: s.setter,
-        code: m ? m[0].trim() : "",
-      });
-    }
+    reasons.push(
+      "React component file"
+    );
   }
 
-  return chunks.slice(0, 12);
+  if (
+    intent.backend &&
+    /server|api|backend|index\.js|\.server\./i.test(
+      lowerPath
+    )
+  ) {
+    score += 9;
+
+    reasons.push(
+      "Backend-related file"
+    );
+  }
+
+  if (
+    intent.logic &&
+    /\.(ts|tsx|js|jsx)$/i.test(
+      lowerPath
+    )
+  ) {
+    score += 5;
+
+    reasons.push(
+      "Logic/code file"
+    );
+  }
+
+  if (
+    intent.config &&
+    /(package\.json|vite\.config|tsconfig)/i.test(
+      lowerPath
+    )
+  ) {
+    score += 8;
+
+    reasons.push(
+      "Configuration file"
+    );
+  }
+
+  if (
+    /src[\\/]/i.test(
+      filePath
+    )
+  ) {
+    score += 2;
+  }
+
+  if (
+    /README|\.md$/i.test(
+      lowerPath
+    )
+  ) {
+    score -= 2;
+  }
+
+  return {
+    score,
+    reason:
+      reasons.join(", ") ||
+      "Relevant project source file",
+  };
 }
 
-function educationGoal(prompt) {
-  const t = String(prompt || "").toLowerCase();
-
-  if (/mode|setmode|vibe coding|education mode|safe mode/.test(t)) {
-    return "Understand how the application's mode state controls what the interface does.";
-  }
-
-  if (/button|click|handler|event/.test(t)) {
-    return "Understand how a user action travels through the React event system.";
-  }
-
-  if (/state|usestate/.test(t)) {
-    return "Understand how React state is created, updated, and used by the interface.";
-  }
-
-  if (/api|fetch|backend|server/.test(t)) {
-    return "Understand how the frontend communicates with the backend.";
-  }
-
-  return "Understand the selected code by connecting its parts to the application's behavior.";
-}
-
-function buildRelationshipLesson(source, filePath, prompt) {
-  const rel = extractModeRelationships(source);
-
-  if (!rel.length) return null;
-
-  const state = rel.find((x) => x.type === "state");
-  const setters = rel.find((x) => x.type === "setters");
-  const checks = rel.find((x) => x.type === "checks");
-  const buttons = rel.filter((x) => x.type === "button");
-
-  const lines = [];
-
-  lines.push("**EDUCATION MODE**");
-  lines.push("");
-
-  lines.push("## What you will learn");
-  lines.push("");
-  lines.push(educationGoal(prompt));
-  lines.push("");
-
-  lines.push("## The big picture");
-  lines.push("");
-
-  lines.push(
-    "This part of the application is connected through a chain of events:"
-  );
-  lines.push("");
-
-  lines.push(
-    "**User clicks a button → the button handler runs → `setMode(...)` updates React state → `mode` receives the new value → React renders again using the new state → mode-dependent UI or behavior can change.**"
-  );
-  lines.push("");
-
-  if (buttons.length) {
-    lines.push("## 1. Start with the buttons");
-    lines.push("");
-
-    for (const b of buttons) {
-      lines.push(
-        `- **${b.label}** calls \`setMode("${b.value}")\`.`
-      );
-    }
-
-    lines.push("");
-
-    lines.push(
-      "The important idea is that the button does not directly redraw the whole interface. It requests a state change."
-    );
-    lines.push("");
-  }
-
-  if (state) {
-    lines.push("## 2. The `mode` state");
-    lines.push("");
-
-    lines.push(
-      "`mode` stores which application mode is currently active."
-    );
-    lines.push("");
-
-    lines.push(
-      "`setMode` is the function React provides for changing that state."
-    );
-    lines.push("");
-
-    lines.push(
-      "When `setMode(...)` is called, React schedules a re-render so the interface can use the updated value."
-    );
-    lines.push("");
-  }
-
-  if (setters?.values?.length) {
-    lines.push("## 3. Possible mode values");
-    lines.push("");
-
-    for (const value of setters.values) {
-      lines.push(`- \`${value}\``);
-    }
-
-    lines.push("");
-
-    lines.push(
-      "These values act like labels that let the application know which behavior or interface state is active."
-    );
-    lines.push("");
-  }
-
-  if (checks?.values?.length) {
-    lines.push("## 4. Where the state is used");
-    lines.push("");
-
-    for (const value of checks.values) {
-      lines.push(
-        `The code checks whether \`mode === "${value}"\`.`
-      );
-    }
-
-    lines.push("");
-
-    lines.push(
-      "This is the second half of the relationship: changing state only becomes useful when the application reads that state and makes a decision from it."
-    );
-    lines.push("");
-  }
-
-  lines.push("## 5. Why this relationship matters");
-  lines.push("");
-
-  lines.push(
-    "The important concept is **state-driven UI**. Instead of manually telling every part of the page what to do after a click, React lets the application store the current state and render from that state."
-  );
-  lines.push("");
-
-  lines.push(
-    "That makes the interface easier to reason about: the current `mode` describes the current application state."
-  );
-  lines.push("");
-
-  lines.push("## Quick check");
-  lines.push("");
-
-  if (buttons.length && setters?.values?.length) {
-    lines.push(
-      `**Think about this:** if a user clicks a button that calls \`setMode("${setters.values[0]}")\`, what value should \`mode\` have after React updates the state?`
-    );
-  } else {
-    lines.push(
-      "**Think about this:** what changes in the application when the value stored in `mode` changes?"
-    );
-  }
-
-  lines.push("");
-
-  lines.push("## Source");
-  lines.push("");
-
-  lines.push(
-    `Selected file: \`${normalizePath(filePath)}\``
-  );
-
-  return lines.join("\n");
-}
-
-/* ============================================================
-   MAIN EDUCATION LESSON
-   ============================================================ */
-
-function buildEducationLesson(source, filePath, prompt) {
-  const code = String(source || "");
-  const t = String(prompt || "").toLowerCase();
-  const facts = educationFacts(code, filePath);
-
-  /*
-   * EDUCATION MODE PRIORITY
-   *
-   * The student's actual question decides the lesson.
-   */
-
-  const asksAboutBackendFlow =
-    /frontend.*backend|backend.*frontend|frontend.*server|server.*frontend|ai response|response.*screen|screen.*response|ollama|api.*response|response.*api|request.*response|prompt.*backend|backend.*prompt|how.*response.*(screen|frontend|display)|how.*(ai|response).*gets.*(screen|page)/i.test(
-      prompt
-    );
-
-  const asksAboutMode =
-    /mode|setmode|vibe coding|education mode|safe mode/.test(t) &&
-    !asksAboutBackendFlow;
-
-  const asksAboutState =
-    /state|usestate|setstate|react state/.test(t) &&
-    !asksAboutBackendFlow &&
-    !asksAboutMode;
-
-  /* ==========================================================
-     FRONTEND → BACKEND → OLLAMA → FRONTEND
-     ========================================================== */
-
-  if (asksAboutBackendFlow) {
-    const hasHandleBuild =
-      /\bhandleBuild\b/.test(code);
-
-    const hasFetch =
-      /\bfetch\s*\(/.test(code);
-
-    const hasChatEndpoint =
-      /\/api\/chat/.test(code);
-
-    const hasPost =
-      /method\s*:\s*["']POST["']/.test(code);
-
-    const hasJsonStringify =
-      /JSON\.stringify\s*\(/.test(code);
-
-    const hasResponseJson =
-      /response\.json\s*\(/.test(code);
-
-    const hasAiResponse =
-      /\baiResponse\b/.test(code);
-
-    const hasSetAiResponse =
-      /\bsetAiResponse\s*\(/.test(code);
-
-    const lines = [];
-
-    lines.push("**EDUCATION MODE**");
-    lines.push("");
-
-    lines.push("## What you will learn");
-    lines.push("");
-
-    lines.push(
-      "Understand how VibeCoder EDU sends a user's prompt from the React frontend to the backend and brings the AI response back onto the screen."
-    );
-    lines.push("");
-
-    lines.push("## The big picture");
-    lines.push("");
-
-    lines.push(
-      "**User enters a prompt → React handler runs → frontend sends a POST request → `/api/chat` receives it → backend sends the prompt to Ollama → Ollama generates the answer → backend returns the answer → frontend receives the response → React updates `aiResponse` → the UI displays it.**"
-    );
-    lines.push("");
-
-    lines.push("## 1. The user starts the process");
-    lines.push("");
-
-    if (hasHandleBuild) {
-      lines.push(
-        "The process begins inside the frontend's `handleBuild` logic. This is the code responsible for taking the user's request and starting the AI interaction."
-      );
-    } else {
-      lines.push(
-        "The process begins in the frontend when the user submits their prompt."
-      );
-    }
-
-    lines.push("");
-
-    lines.push("## 2. The frontend sends the request");
-    lines.push("");
-
-    if (hasFetch && hasChatEndpoint && hasPost) {
-      lines.push(
-        "The frontend uses `fetch(...)` to make a **POST** request to `/api/chat`."
-      );
-    } else if (hasFetch) {
-      lines.push(
-        "The frontend uses `fetch(...)` to communicate with the backend."
-      );
-    } else {
-      lines.push(
-        "The frontend prepares a request that is sent to the backend."
-      );
-    }
-
-    lines.push("");
-
-    if (hasJsonStringify) {
-      lines.push(
-        "`JSON.stringify(...)` converts the request data into JSON so it can be sent in the HTTP request body."
-      );
-      lines.push("");
-    }
-
-    lines.push("## 3. The backend receives the request");
-    lines.push("");
-
-    lines.push(
-      "The backend's `/api/chat` endpoint receives the frontend request."
-    );
-    lines.push("");
-
-    lines.push(
-      "The backend can then read the user's prompt and decide how it should be handled."
-    );
-    lines.push("");
-
-    lines.push("## 4. The backend communicates with Ollama");
-    lines.push("");
-
-    lines.push(
-      "VibeCoder EDU's backend sends the prompt to the local Ollama service, which runs the Qwen2.5-Coder model."
-    );
-    lines.push("");
-
-    lines.push(
-      "This keeps the AI processing connected to the local development environment."
-    );
-    lines.push("");
-
-    lines.push("## 5. Ollama generates the response");
-    lines.push("");
-
-    lines.push(
-      "Ollama processes the prompt and generates the AI response."
-    );
-    lines.push("");
-
-    lines.push(
-      "The backend receives that generated response and prepares it to send back to the browser."
-    );
-    lines.push("");
-
-    lines.push("## 6. The response returns to React");
-    lines.push("");
-
-    if (hasResponseJson) {
-      lines.push(
-        "The frontend reads the server's JSON response using `response.json()`."
-      );
-    } else {
-      lines.push(
-        "The frontend receives the backend's response and processes the returned data."
-      );
-    }
-
-    lines.push("");
-
-    if (hasSetAiResponse) {
-      lines.push(
-        "The important React connection is `setAiResponse(...)`. This updates the state containing the AI response."
-      );
-    }
-
-    lines.push("");
-
-    lines.push("## 7. React displays the answer");
-    lines.push("");
-
-    if (hasAiResponse) {
-      lines.push(
-        "`aiResponse` stores the generated answer, and React uses that state when rendering the interface."
-      );
-    } else {
-      lines.push(
-        "The returned AI data is stored in frontend state and used by React to update the interface."
-      );
-    }
-
-    lines.push("");
-
-    lines.push("## The complete relationship");
-    lines.push("");
-
-    lines.push("```text");
-    lines.push("User prompt");
-    lines.push("    ↓");
-    lines.push("Frontend handler");
-    lines.push("    ↓");
-    lines.push("fetch('/api/chat')");
-    lines.push("    ↓");
-    lines.push("Express backend");
-    lines.push("    ↓");
-    lines.push("Ollama + Qwen2.5-Coder");
-    lines.push("    ↓");
-    lines.push("AI response");
-    lines.push("    ↓");
-    lines.push("response.json()");
-    lines.push("    ↓");
-    lines.push("setAiResponse(...)");
-    lines.push("    ↓");
-    lines.push("React re-renders");
-    lines.push("    ↓");
-    lines.push("Response appears on screen");
-    lines.push("```");
-    lines.push("");
-
-    lines.push("## Why this relationship matters");
-    lines.push("");
-
-    lines.push(
-      "This shows an important full-stack concept: the browser does not directly ask Ollama for the answer. The React frontend communicates with the Express backend, and the backend communicates with the local AI service."
-    );
-    lines.push("");
-
-    lines.push(
-      "Each layer has a responsibility, which makes the application easier to organize and maintain."
-    );
-    lines.push("");
-
-    lines.push("## Quick check");
-    lines.push("");
-
-    lines.push(
-      "**Think about this:** why does the frontend need the backend between itself and Ollama instead of simply putting the Ollama request directly inside the browser code?"
-    );
-    lines.push("");
-
-    lines.push("## Source");
-    lines.push("");
-
-    lines.push(
-      `Selected file: \`${normalizePath(filePath)}\``
-    );
-
-    return lines.join("\n");
-  }
-
-  /* ==========================================================
-     MODE LESSON
-     ========================================================== */
-
-  if (asksAboutMode) {
-    const relationshipLesson = buildRelationshipLesson(
-      source,
-      filePath,
-      prompt
-    );
-
-    if (relationshipLesson) {
-      return relationshipLesson;
-    }
-  }
-
-  /* ==========================================================
-     STATE LESSON
-     ========================================================== */
-
-  if (asksAboutState) {
-    const lines = [];
-
-    lines.push("**EDUCATION MODE**");
-    lines.push("");
-
-    lines.push("## What you will learn");
-    lines.push("");
-
-    lines.push(
-      "Understand how React state is created, updated, and used by the interface."
-    );
-    lines.push("");
-
-    lines.push("## State detected in this file");
-    lines.push("");
-
-    if (facts.states.length) {
-      for (const state of facts.states) {
-        lines.push(
-          `- \`${state.value}\` is the state value.`
-        );
-
-        lines.push(
-          `- \`${state.setter}\` is the function used to update it.`
-        );
-
-        lines.push("");
+/*
+  IMPORTANT:
+  This function now guarantees that every
+  project file appears only once.
+
+  Even if the filesystem somehow produces
+  equivalent paths such as:
+
+    src/App.css
+    src\\App.css
+    /src/App.css
+
+  they all become one canonical entry.
+*/
+function collectProjectFiles(
+  currentPath,
+  relativeBase = "",
+  result = [],
+  seen = new Set()
+) {
+  let entries = [];
+
+  try {
+    entries = fs.readdirSync(
+      currentPath,
+      {
+        withFileTypes: true,
       }
-    } else {
-      lines.push(
-        "No `useState` relationship was detected in the selected source."
-      );
-      lines.push("");
+    );
+  } catch {
+    return result;
+  }
+
+  for (const entry of entries) {
+    if (
+      IGNORED_NAMES.has(
+        entry.name
+      )
+    ) {
+      continue;
     }
 
-    lines.push("## The basic relationship");
-    lines.push("");
+    const absolutePath =
+      path.join(
+        currentPath,
+        entry.name
+      );
 
-    lines.push(
-      "**State value → setter function → state changes → React re-renders → UI reflects the new state.**"
-    );
-    lines.push("");
-
-    lines.push("## Why this matters");
-    lines.push("");
-
-    lines.push(
-      "React state allows the interface to respond to user actions and changing application data without manually redrawing the page."
-    );
-    lines.push("");
-
-    lines.push("## Quick check");
-    lines.push("");
-
-    lines.push(
-      "**Think about this:** what would happen to the interface if the setter function changed a state value?"
-    );
-    lines.push("");
-
-    lines.push("## Source");
-    lines.push("");
-
-    lines.push(
-      `Selected file: \`${normalizePath(filePath)}\``
-    );
-
-    return lines.join("\n");
-  }
-
-  /* ==========================================================
-     GENERAL SOURCE-GROUNDED LESSON
-     ========================================================== */
-
-  const relevant = findRelevantCode(
-    source,
-    prompt
-  );
-
-  const lines = [];
-
-  lines.push("**EDUCATION MODE**");
-  lines.push("");
-
-  lines.push("## Learning goal");
-  lines.push("");
-
-  lines.push(educationGoal(prompt));
-  lines.push("");
-
-  lines.push("## Source snapshot");
-  lines.push("");
-
-  lines.push(
-    `- **File:** \`${normalizePath(filePath)}\``
-  );
-
-  lines.push(
-    `- **Lines:** ${facts.lineCount}`
-  );
-
-  lines.push(
-    `- **Non-empty lines:** ${facts.nonEmptyLineCount}`
-  );
-
-  if (facts.functions.length) {
-    lines.push(
-      `- **Functions detected:** ${facts.functions.join(", ")}`
-    );
-  }
-
-  if (facts.states.length) {
-    lines.push(
-      `- **React state:** ${facts.states
-        .map(
-          (s) =>
-            `\`${s.value}\` / \`${s.setter}\``
+    const relativePath =
+      normalizePath(
+        path.join(
+          relativeBase,
+          entry.name
         )
-        .join(", ")}`
+      );
+
+    if (entry.isDirectory()) {
+      collectProjectFiles(
+        absolutePath,
+        relativePath,
+        result,
+        seen
+      );
+
+      continue;
+    }
+
+    const key =
+      canonicalPath(
+        relativePath
+      );
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    result.push(
+      relativePath
     );
   }
 
-  if (facts.fetchCalls) {
-    lines.push(
-      `- **Fetch calls:** ${facts.fetchCalls}`
-    );
-  }
+  return result;
+}
 
-  if (facts.responseJsonCalls) {
-    lines.push(
-      `- **JSON response parsing:** ${facts.responseJsonCalls}`
-    );
-  }
+/* =========================================================
+   SMART CONTEXT ENDPOINT
+========================================================= */
 
-  lines.push("");
+app.post(
+  "/api/project/suggest-context",
+  (req, res) => {
+    try {
+      const prompt =
+        String(
+          req.body?.prompt || ""
+        ).trim();
 
-  if (relevant.length) {
-    lines.push("## Relevant relationships");
-    lines.push("");
+      if (!prompt) {
+        return res.json({
+          suggestions: [],
+        });
+      }
 
-    for (const item of relevant) {
-      if (item.type === "stateDetail") {
-        lines.push(
-          `- React state \`${item.value}\` is controlled by \`${item.setter}\`.`
+      const files =
+        collectProjectFiles(
+          PROJECT_ROOT
         );
 
-        if (item.code) {
-          lines.push(
-            `  - Source pattern: \`${item.code}\``
+      /*
+        Map every file to one suggestion.
+      */
+      const scoredFiles =
+        files
+          .map((filePath) => {
+            const normalizedPath =
+              normalizePath(
+                filePath
+              );
+
+            const result =
+              scoreFile(
+                normalizedPath,
+                prompt
+              );
+
+            return {
+              path: normalizedPath,
+              name: path.basename(
+                normalizedPath
+              ),
+              score: result.score,
+              reason: result.reason,
+            };
+          })
+          .filter(
+            (file) =>
+              file.score > 0
+          )
+          .sort(
+            (a, b) =>
+              b.score - a.score
+          );
+
+      /*
+        Final hard deduplication.
+
+        Map key:
+        lowercase normalized path
+
+        This means:
+        App.css
+        app.css
+        src/App.css
+        src\\App.css
+
+        cannot appear twice if they resolve
+        to the same project-relative path.
+      */
+      const uniqueSuggestions =
+        new Map();
+
+      for (
+        const file of scoredFiles
+      ) {
+        const key =
+          canonicalPath(
+            file.path
+          );
+
+        if (
+          !uniqueSuggestions.has(
+            key
+          )
+        ) {
+          uniqueSuggestions.set(
+            key,
+            file
           );
         }
       }
-    }
 
-    lines.push("");
+      /*
+        Return only the top 3 unique files.
+        For a simple styling request this
+        should normally give us:
+
+        1. App.css
+        2. index.css
+        3. App.tsx
+      */
+      const suggestions =
+        Array.from(
+          uniqueSuggestions.values()
+        ).slice(0, 3);
+
+      console.log(
+        "SMART CONTEXT REQUEST:",
+        prompt
+      );
+
+      console.log(
+        "SMART CONTEXT RESULTS:",
+        suggestions.map(
+          (file) =>
+            file.path
+        )
+      );
+
+      res.json({
+        suggestions,
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message:
+          "Smart Context failed.",
+      });
+    }
+  }
+);
+
+/* =========================================================
+   EDUCATION MODE
+========================================================= */
+
+function educationFacts(
+  prompt = ""
+) {
+  const facts = [];
+
+  if (
+    /\bfunction\b/i.test(
+      prompt
+    )
+  ) {
+    facts.push(
+      "A function is a reusable block of code designed to perform a specific task."
+    );
   }
 
-  lines.push("## How to read this code");
-  lines.push("");
+  if (
+    /\bvariable\b/i.test(
+      prompt
+    )
+  ) {
+    facts.push(
+      "A variable gives a value a name so the program can use that value later."
+    );
+  }
 
-  lines.push(
-    "Start with the values and functions that directly affect the behavior you are studying. Then follow where those values are created, changed, and finally used."
-  );
-  lines.push("");
+  if (
+    /\barray\b/i.test(
+      prompt
+    )
+  ) {
+    facts.push(
+      "An array stores multiple values in an ordered collection."
+    );
+  }
 
-  lines.push("## Quick check");
-  lines.push("");
+  if (
+    /\bobject\b/i.test(
+      prompt
+    )
+  ) {
+    facts.push(
+      "An object groups related data using properties and values."
+    );
+  }
 
-  lines.push(
-    "Choose one important variable or function in this file and trace three things: **where it is created, where it changes, and where its value is used.**"
-  );
-  lines.push("");
+  if (
+    /\bif\b|\bcondition\b/i.test(
+      prompt
+    )
+  ) {
+    facts.push(
+      "A conditional lets a program choose what to do based on whether a condition is true or false."
+    );
+  }
 
-  lines.push("## Source");
-  lines.push("");
-
-  lines.push(
-    `Selected file: \`${normalizePath(filePath)}\``
-  );
-
-  return lines.join("\n");
+  return facts;
 }
 
-/* ============================================================
+function findState(
+  content = ""
+) {
+  const matches =
+    content.match(
+      /(?:const|let)\s+\w+\s*=\s*(?:useState\([^)]*\)|[^;]+)/g
+    ) || [];
+
+  return matches.slice(0, 5);
+}
+
+function extractModeRelationships(
+  content = ""
+) {
+  const relationships = [];
+
+  if (
+    /\bmode\b/i.test(
+      content
+    ) &&
+    /\bsetMode\b/i.test(
+      content
+    )
+  ) {
+    relationships.push(
+      "The `mode` state stores the current working mode, while `setMode` changes it."
+    );
+  }
+
+  if (
+    /\bprompt\b/i.test(
+      content
+    ) &&
+    /\bsetPrompt\b/i.test(
+      content
+    )
+  ) {
+    relationships.push(
+      "The `prompt` state stores the user's request and `setPrompt` updates it."
+    );
+  }
+
+  if (
+    /\bselectedFile\b/i.test(
+      content
+    )
+  ) {
+    relationships.push(
+      "The selected file state connects the Project Explorer to the file-reading and AI-context features."
+    );
+  }
+
+  return relationships;
+}
+
+function findRelevantCode(
+  content = "",
+  prompt = ""
+) {
+  const lines =
+    content.split("\n");
+
+  const keywords =
+    prompt
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(
+        (word) =>
+          word.length > 3
+      );
+
+  const relevant = [];
+
+  lines.forEach(
+    (line, index) => {
+      const lower =
+        line.toLowerCase();
+
+      if (
+        keywords.some(
+          (keyword) =>
+            lower.includes(
+              keyword
+            )
+        )
+      ) {
+        relevant.push(
+          `Line ${
+            index + 1
+          }: ${line.trim()}`
+        );
+      }
+    }
+  );
+
+  return relevant.slice(
+    0,
+    8
+  );
+}
+
+function educationGoal(
+  prompt = ""
+) {
+  if (
+    /\bfunction\b/i.test(
+      prompt
+    )
+  ) {
+    return "Understand how functions are defined, what inputs they receive, and what they return.";
+  }
+
+  if (
+    /\bstate\b|\buseState\b/i.test(
+      prompt
+    )
+  ) {
+    return "Understand how state stores information and how state updates change a React interface.";
+  }
+
+  if (
+    /\breact\b|\bcomponent\b/i.test(
+      prompt
+    )
+  ) {
+    return "Understand how React components combine data, logic, and UI.";
+  }
+
+  return "Understand the requested concept by connecting it to the source code and a simple example.";
+}
+
+function buildRelationshipLesson(
+  prompt,
+  content
+) {
+  const relationships =
+    extractModeRelationships(
+      content
+    );
+
+  const state =
+    findState(content);
+
+  const relevant =
+    findRelevantCode(
+      content,
+      prompt
+    );
+
+  return [
+    "### Teacher Explanation",
+    "",
+    `**Learning goal:** ${educationGoal(
+      prompt
+    )}`,
+    "",
+    relationships.length
+      ? `**How the pieces connect:**\n${relationships
+          .map(
+            (item) =>
+              `- ${item}`
+          )
+          .join("\n")}`
+      : "**How the pieces connect:**\n- The selected source does not expose an obvious state relationship for this request yet.",
+    "",
+    state.length
+      ? `**Relevant state in this file:**\n${state
+          .map(
+            (item) =>
+              `- \`${item}\``
+          )
+          .join("\n")}`
+      : "**Relevant state:**\n- No obvious React state declaration was found.",
+    "",
+    relevant.length
+      ? `**Relevant source lines:**\n${relevant
+          .map(
+            (item) =>
+              `- \`${item}\``
+          )
+          .join("\n")}`
+      : "**Relevant source lines:**\n- No exact matching source lines were found.",
+    "",
+    "**Think like a developer:**",
+    "1. Identify the data being stored.",
+    "2. Find the function that changes that data.",
+    "3. Find where the data is used to influence the interface.",
+  ].join("\n");
+}
+
+function buildEducationLesson(
+  prompt,
+  content = ""
+) {
+  const facts =
+    educationFacts(prompt);
+
+  if (
+    content &&
+    (/\bmode\b|\bstate\b|\buseState\b/i.test(
+      prompt
+    ))
+  ) {
+    return buildRelationshipLesson(
+      prompt,
+      content
+    );
+  }
+
+  const relevant =
+    content
+      ? findRelevantCode(
+          content,
+          prompt
+        )
+      : [];
+
+  return [
+    "### Teacher Explanation",
+    "",
+    `**Learning goal:** ${educationGoal(
+      prompt
+    )}`,
+    "",
+    facts.length
+      ? `**Key idea:**\n${facts
+          .map(
+            (fact) =>
+              `- ${fact}`
+          )
+          .join("\n")}`
+      : "**Key idea:**\n- Start by identifying the main concept in the question, then connect it to a small example.",
+    "",
+    relevant.length
+      ? `**From your code:**\n${relevant
+          .map(
+            (line) =>
+              `- ${line}`
+          )
+          .join("\n")}`
+      : "**From your code:**\n- No source code was provided for a source-specific explanation.",
+    "",
+    "**Simple example:**",
+    "```js",
+    "function addNumbers(a, b) {",
+    "  return a + b;",
+    "}",
+    "",
+    "const result = addNumbers(2, 3);",
+    "```",
+    "",
+    "Here the function receives two inputs, performs the calculation, and returns the result.",
+    "",
+    "**Remember:**",
+    "Understanding the purpose of each piece is more important than memorizing the syntax.",
+  ].join("\n");
+}
+
+/* =========================================================
    UI ANALYSIS
-   ============================================================ */
+========================================================= */
 
-function isUiStylingRequest(prompt) {
-  const t = String(prompt || "").toLowerCase();
-
-  return (
-    /make.*(look|design|ui|interface|beautiful|modern|clean|professional)/.test(
-      t
-    ) ||
-    /improve.*(ui|design|styling|appearance)/.test(t) ||
-    /change.*(color|colour|background|font|spacing|layout)/.test(t) ||
-    /dark mode|dark theme|responsive design/.test(t)
+function isUiStylingRequest(
+  prompt = ""
+) {
+  return /\b(background|background color|dark mode|light mode|theme|button|font|color|colour|spacing|padding|margin|layout|border|shadow|style|styling|appearance|ui|interface)\b/i.test(
+    prompt
   );
 }
 
 function buildUiStylingAnalysis(
-  prompt,
-  contextFiles,
-  selectedFile,
-  selectedFileContent
+  prompt
 ) {
-  const lines = [];
-
-  lines.push("**UI/STYLING ANALYSIS**");
-  lines.push("");
-
-  lines.push("## Request");
-  lines.push("");
-  lines.push(prompt);
-  lines.push("");
-
-  lines.push("## Recommended approach");
-  lines.push("");
-
-  lines.push(
-    "First inspect the existing component structure and styles. Then make the smallest coordinated changes needed so the new visual design remains consistent with the current application."
-  );
-  lines.push("");
-
-  if (selectedFile) {
-    lines.push(
-      `Selected file: \`${normalizePath(selectedFile)}\``
-    );
-    lines.push("");
-  }
-
-  if (contextFiles.length) {
-    lines.push("Relevant context files:");
-    lines.push("");
-
-    for (const file of contextFiles) {
-      lines.push(`- \`${normalizePath(file)}\``);
-    }
-
-    lines.push("");
-  }
-
-  lines.push("## Design priorities");
-  lines.push("");
-
-  lines.push("- Keep the interface readable.");
-  lines.push("- Preserve existing functionality.");
-  lines.push("- Use consistent spacing and typography.");
-  lines.push("- Keep buttons and interactive states obvious.");
-  lines.push("- Avoid unnecessary visual complexity.");
-  lines.push("");
-
-  lines.push(
-    "No files have been changed by this analysis."
-  );
-
-  return lines.join("\n");
+  return [
+    "### UI Analysis",
+    "",
+    `**Request:** ${prompt}`,
+    "",
+    "**Recommended approach:**",
+    "- Identify the component that renders the affected UI.",
+    "- Identify the stylesheet controlling its appearance.",
+    "- Make the smallest targeted styling change.",
+    "- Test the interface after the change.",
+    "",
+    "**Safety:**",
+    "No files were changed by this analysis.",
+  ].join("\n");
 }
 
-/* ============================================================
+/* =========================================================
    FILE FUNCTION ANALYSIS
-   ============================================================ */
+========================================================= */
 
-function isFileFunctionRequest(prompt) {
-  const t = String(prompt || "").toLowerCase();
-
-  return (
-    /what does.*(file|code|function)/.test(t) ||
-    /explain.*(file|code|function)/.test(t) ||
-    /how.*work.*(file|code|function)/.test(t) ||
-    /what is this file/.test(t)
+function isFileFunctionRequest(
+  prompt = ""
+) {
+  return /\b(functions?|methods?|handlers?|what does this file do|explain this file|analyze this file)\b/i.test(
+    prompt
   );
 }
 
-function buildFileFunctionSummary(source, filePath) {
-  const facts = educationFacts(source, filePath);
+function buildFileFunctionSummary(
+  filePath,
+  content
+) {
+  const functions = [];
 
-  const lines = [];
-
-  lines.push("**FILE ANALYSIS**");
-  lines.push("");
-
-  lines.push(
-    `## ${normalizePath(filePath)}`
-  );
-  lines.push("");
-
-  lines.push(
-    `This file contains **${facts.lineCount} lines** and **${facts.nonEmptyLineCount} non-empty lines**.`
-  );
-  lines.push("");
-
-  if (facts.functions.length) {
-    lines.push("### Functions");
-    lines.push("");
-
-    for (const fn of facts.functions) {
-      lines.push(`- \`${fn}\``);
-    }
-
-    lines.push("");
-  }
-
-  if (facts.states.length) {
-    lines.push("### React state");
-    lines.push("");
-
-    for (const state of facts.states) {
-      lines.push(
-        `- \`${state.value}\` is updated with \`${state.setter}\``
-      );
-    }
-
-    lines.push("");
-  }
-
-  if (facts.fetchCalls) {
-    lines.push(
-      `### Network communication: ${facts.fetchCalls} fetch call(s)`
-    );
-    lines.push("");
-  }
-
-  if (facts.hasJSX) {
-    lines.push(
-      "### UI: JSX markup is present, so this file contributes to the React interface."
-    );
-    lines.push("");
-  }
-
-  lines.push("### Overall role");
-  lines.push("");
-
-  lines.push(
-    "The file combines application logic with the structures detected above. Follow the functions and state values to understand how its behavior is connected."
-  );
-
-  return lines.join("\n");
-}
-
-/* ============================================================
-   DARK MODE PLAN
-   ============================================================ */
-
-function isDarkModeRequest(prompt) {
-  const t = String(prompt || "").toLowerCase();
-
-  return (
-    t.includes("dark mode") ||
-    t.includes("dark theme") ||
-    t.includes("dark-mode")
-  );
-}
-
-function buildDeterministicAgentPlan(prompt) {
-  if (!isDarkModeRequest(prompt)) return null;
-
-  const files = collectProjectFiles();
-
-  const appFile = files.find(
-    (x) => x.toLowerCase() === "src/app.tsx"
-  );
-
-  const cssFile = files.find(
-    (x) => x.toLowerCase() === "src/app.css"
-  );
-
-  const selected = [
-    ...[appFile, cssFile].filter(Boolean),
+  const patterns = [
+    /function\s+([A-Za-z_$][\w$]*)\s*\(/g,
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/g,
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\w+\s*=>/g,
   ];
 
-  const steps = [];
+  for (
+    const pattern of patterns
+  ) {
+    let match;
 
-  if (appFile) {
-    steps.push(
-      `Inspect \`${appFile}\` and add React state to track dark mode.`
-    );
-
-    steps.push(
-      `Add a dark mode toggle in \`${appFile}\` using the existing event-handler pattern.`
-    );
+    while (
+      (match =
+        pattern.exec(content)) !==
+      null
+    ) {
+      if (
+        !functions.includes(
+          match[1]
+        )
+      ) {
+        functions.push(
+          match[1]
+        );
+      }
+    }
   }
 
-  if (cssFile) {
-    steps.push(
-      `Update existing \`${cssFile}\` styles with state-based dark-mode styling.`
-    );
-  }
+  return [
+    "### File Analysis",
+    "",
+    `**File:** \`${filePath}\``,
+    "",
+    functions.length
+      ? `**Functions detected:**\n${functions
+          .map(
+            (name) =>
+              `- \`${name}()\``
+          )
+          .join("\n")}`
+      : "**Functions detected:**\n- No standard function declarations were detected.",
+    "",
+    "**Purpose:**",
+    "This file contains application logic used by the VibeCoder EDU interface.",
+    "",
+    "**Safety:**",
+    "No files were changed.",
+  ].join("\n");
+}
 
-  steps.push(
-    "Connect the toggle to the existing interface and verify current functionality remains intact."
+/* =========================================================
+   DARK / BACKGROUND REQUEST DETECTION
+========================================================= */
+
+function isDarkModeRequest(
+  prompt = ""
+) {
+  return /\bdark mode\b|\bdark theme\b|\bdark background\b|\bdark blue\b/i.test(
+    prompt
   );
+}
+
+function isDarkBlueRequest(
+  prompt = ""
+) {
+  return /\bdark blue\b/i.test(
+    prompt
+  );
+}
+
+function isBackgroundColorRequest(
+  prompt = ""
+) {
+  return /\b(change|make|set|update)\b.*\bbackground\b/i.test(
+    prompt
+  );
+}
+
+function buildDeterministicAgentPlan(
+  prompt
+) {
+  const files =
+    collectProjectFiles(
+      PROJECT_ROOT
+    );
+
+  const appFile =
+    files.find(
+      (file) =>
+        canonicalPath(file) ===
+        "src/app.tsx"
+    ) ||
+    "src/App.tsx";
+
+  const cssFile =
+    files.find(
+      (file) =>
+        canonicalPath(file) ===
+        "src/app.css"
+    ) ||
+    "src/App.css";
 
   return {
-    summary: selected.length
-      ? `Add dark mode using the existing ${selected.join(
-          " and "
-        )} structure.`
-      : "Add dark mode using the existing project structure.",
-
-    steps: steps.slice(0, 4),
+    summary:
+      `Create a controlled dark-mode implementation for the request: "${prompt}"`,
+    steps: [
+      {
+        step: 1,
+        title:
+          "Inspect the application UI",
+        description:
+          `Review ${appFile} to identify where a theme or dark-mode control should live.`,
+      },
+      {
+        step: 2,
+        title:
+          "Add theme state or control",
+        description:
+          `Update ${appFile} with the smallest appropriate state/control needed for dark mode.`,
+      },
+      {
+        step: 3,
+        title:
+          "Update visual styles",
+        description:
+          `Update ${cssFile} with dark-mode styling while preserving the existing design.`,
+      },
+      {
+        step: 4,
+        title:
+          "Connect and verify",
+        description:
+          "Connect the control to the stylesheet and verify that the interface switches correctly.",
+      },
+    ],
   };
 }
 
-/* ============================================================
+/* =========================================================
    AGENT PLAN
-   ============================================================ */
+========================================================= */
+
+app.post(
+  "/api/agent/plan",
+  async (req, res) => {
+    try {
+      const prompt =
+        String(
+          req.body?.prompt || ""
+        ).trim();
+
+      const mode =
+        String(
+          req.body?.mode ||
+            "vibe"
+        );
+
+      const contextFiles =
+        Array.isArray(
+          req.body?.contextFiles
+        )
+          ? req.body
+              .contextFiles
+          : [];
+
+      if (!prompt) {
+        return res.status(400).json({
+          message:
+            "Prompt is required.",
+        });
+      }
 
-app.post("/api/agent/plan", async (req, res) => {
-  const prompt = String(req.body?.prompt || "");
-  const mode = String(req.body?.mode || "vibe");
-
-  const contextFiles = Array.isArray(
-    req.body?.contextFiles
-  )
-    ? req.body.contextFiles
-    : [];
-
-  try {
-    const d = buildDeterministicAgentPlan(prompt);
-
-    if (d) {
-      return res.json({
-        success: true,
-        plan: d,
-      });
-    }
-
-    const files = collectProjectFiles();
-
-    const context = contextFiles
-      .filter(isSafeProjectPath)
-      .map((f) => ({
-        path: f,
-        content:
-          readProjectFile(f)?.slice(0, 12000) || "",
-      }));
-
-    const raw = await callOllama(
-      `Create a safe project-aware implementation plan.
-
-USER REQUEST:
-${prompt}
-
-MODE:
-${mode}
-
-PROJECT FILES:
-${files.join("\n")}
-
-CONTEXT:
-${JSON.stringify(context, null, 2)}
-
-Return ONLY JSON with summary and steps (max 4).`,
-      "You are a careful software engineering planning assistant."
-    );
-
-    const p = extractJson(raw);
-
-    res.json({
-      success: true,
-
-      plan:
-        p &&
-        typeof p.summary === "string" &&
-        Array.isArray(p.steps)
-          ? {
-              summary: p.summary,
-              steps: p.steps.slice(0, 4),
-            }
-          : {
-              summary:
-                "Inspect the existing project structure before making the requested change.",
-
-              steps: [
-                "Identify relevant existing files.",
-                "Inspect the source before changing anything.",
-                "Modify the smallest appropriate set of files.",
-                "Test and verify existing functionality.",
-              ],
-            },
-    });
-  } catch (e) {
-    console.error(e);
-
-    res.status(500).json({
-      success: false,
-      error: e.message,
-    });
-  }
-});
-
-/* ============================================================
-   DEBUGGING
-   ============================================================ */
-
-app.post("/api/agent/debug", async (req, res) => {
-  try {
-    const selectedFile = req.body?.selectedFile;
-
-    if (!selectedFile) {
-      return res.json({
-        success: true,
-
-        result: {
-          title: "Diagnostics",
-
-          content:
-            "**DIAGNOSTICS**\n\n## Debugging Agent\n\n**READY**\n\n**PROBLEM**\nNo file is currently selected.\n\n**WHY**\nThe Debugging Agent needs a real project file to inspect.\n\n**SUGGESTED FIX**\nSelect the relevant file and run Debugging Agent again.\n\n**CONFIDENCE**\nhigh",
-        },
-      });
-    }
-
-    if (!isSafeProjectPath(selectedFile)) {
-      return res.status(400).json({
-        success: false,
-        error: "Unsafe selected file path.",
-      });
-    }
-
-    const code = readProjectFile(selectedFile);
-
-    if (code === null) {
-      return res.status(404).json({
-        success: false,
-        error: "Selected file could not be read.",
-      });
-    }
-
-    const flags = {
-      handleBuild:
-        /\bfunction\s+handleBuild\s*\(|\bhandleBuild\s*=/.test(
-          code
-        ),
-
-      fetch: [
-        ...code.matchAll(/fetch\s*\(/g),
-      ].length,
-
-      json: [
-        ...code.matchAll(/response\.json\s*\(/g),
-      ].length,
-
-      tryCatch:
-        /try\s*\{[\s\S]*catch\s*\(/.test(code),
-
-      ai:
-        /\baiResponse\b/.test(code),
-
-      setAi:
-        /\bsetAiResponse\s*\(/.test(code),
-
-      chat:
-        /\/api\/chat/.test(code),
-
-      post:
-        /method\s*:\s*["']POST["']/.test(code),
-
-      stringify:
-        /JSON\.stringify\s*\(/.test(code),
-    };
-
-    const good =
-      flags.handleBuild &&
-      flags.fetch > 0 &&
-      flags.json > 0 &&
-      flags.tryCatch &&
-      flags.ai &&
-      flags.setAi &&
-      flags.chat &&
-      flags.post &&
-      flags.stringify;
-
-    const content = good
-      ? [
-          "**DIAGNOSTICS**",
-          "",
-          "## Debugging Agent",
-          "",
-          "**READY**",
-          "",
-          "**PROBLEM**",
-          "No frontend AI-response bug is proven in the selected file.",
-          "",
-          "**WHY**",
-          "The request → response → state update → UI flow is present in the selected source.",
-          "",
-          "**SUGGESTED FIX**",
-          "Verify runtime browser behavior and the backend response before changing code.",
-          "",
-          "**CONFIDENCE**",
-          "high",
-        ].join("\n")
-      : [
-          "**DIAGNOSTICS**",
-          "",
-          "## Debugging Agent",
-          "",
-          "**READY**",
-          "",
-          "**PROBLEM**",
-          "A complete frontend request-to-response flow could not be verified.",
-          "",
-          "**WHY**",
-          `Source evidence: ${JSON.stringify(flags)}.`,
-          "",
-          "**SUGGESTED FIX**",
-          "Inspect the missing part of the request → response → state update → UI flow.",
-          "",
-          "**CONFIDENCE**",
-          "medium",
-        ].join("\n");
-
-    res.json({
-      success: true,
-
-      result: {
-        title: "Diagnostics",
-        content,
-      },
-    });
-  } catch (e) {
-    console.error(e);
-
-    res.status(500).json({
-      success: false,
-      error: e.message,
-    });
-  }
-});
-
-/* ============================================================
-   CONTROLLED CHANGES
-   ============================================================ */
-
-function extractRequestedButtonText(prompt) {
-  for (const p of [
-    /button\s+text\s+(?:say|to)\s+["'“”]?([^"'“”]+)["'“”]?/i,
-
-    /change\s+(?:the\s+)?button\s+(?:text\s+)?to\s+["'“”]?([^"'“”]+)["'“”]?/i,
-
-    /make\s+(?:the\s+)?button\s+(?:text\s+)?(?:say|read)\s+["'“”]?([^"'“”]+)["'“”]?/i,
-  ]) {
-    const m = String(prompt || "").match(p);
-
-    if (m?.[1]) {
-      return m[1].trim();
-    }
-  }
-
-  return null;
-}
-
-function validateControlledChanges(parsed, allowed) {
-  if (!parsed || !Array.isArray(parsed.changes)) {
-    return [];
-  }
-
-  return parsed.changes
-    .filter(
-      (c) =>
-        c &&
-        typeof c.path === "string" &&
-        typeof c.newContent === "string"
-    )
-    .map((c) => {
-      const match = allowed.find(
-        (a) =>
-          normalizePath(a).toLowerCase() ===
-          normalizePath(c.path).toLowerCase()
-      );
-
-      return match
-        ? {
-            path: match,
-
-            description:
-              typeof c.description === "string"
-                ? c.description
-                : "Controlled source change.",
-
-            oldContent:
-              typeof c.oldContent === "string"
-                ? c.oldContent
-                : "",
-
-            newContent: c.newContent,
-          }
-        : null;
-    })
-    .filter(Boolean);
-}
-
-app.post("/api/agent/changes", async (req, res) => {
-  try {
-    const prompt = String(req.body?.prompt || "");
-    const mode = String(req.body?.mode || "vibe");
-
-    const allowed = (
-      Array.isArray(req.body?.contextFiles)
-        ? req.body.contextFiles
-        : []
-    ).filter(isSafeProjectPath);
-
-    if (!allowed.length) {
-      return res.json({
-        success: false,
-        error:
-          "No safe context file was selected. Select a file before proposing changes.",
-      });
-    }
-
-    const contents = Object.fromEntries(
-      allowed.map((f) => [
-        f,
-        readProjectFile(f) || "",
-      ])
-    );
-
-    const raw = await callOllama(
-      `You are the Controlled Changes Agent inside VibeCoder EDU.
-
-USER REQUEST:
-${prompt}
-
-MODE:
-${mode}
-
-ONLY THESE FILES MAY CHANGE:
-${allowed.join("\n")}
-
-SOURCE:
-${JSON.stringify(contents, null, 2)}
-
-Return ONLY JSON:
-{"changes":[{"path":"exact existing path","description":"what changed","oldContent":"complete original file","newContent":"complete updated file"}]}
-
-Preserve functionality.`,
-      "You are a strict and safe code-change assistant."
-    );
-
-    const valid = validateControlledChanges(
-      extractJson(raw),
-      allowed
-    );
-
-    if (!valid.length) {
-      return res.json({
-        success: false,
-        error:
-          "The AI could not produce a safe, valid change. No files were changed.",
-      });
-    }
-
-    res.json({
-      success: true,
-      changes: valid,
-    });
-  } catch (e) {
-    console.error(e);
-
-    res.status(500).json({
-      success: false,
-      error: e.message,
-    });
-  }
-});
-
-app.post("/api/agent/apply", (req, res) => {
-  try {
-    const changes = Array.isArray(req.body?.changes)
-      ? req.body.changes
-      : [];
-
-    if (!changes.length) {
-      return res.status(400).json({
-        success: false,
-        error: "No approved changes supplied.",
-      });
-    }
-
-    const applied = [];
-
-    for (const c of changes) {
       if (
-        !c ||
-        typeof c.path !== "string" ||
-        typeof c.newContent !== "string" ||
-        !isSafeProjectPath(c.path)
+        isDarkModeRequest(
+          prompt
+        )
       ) {
-        continue;
-      }
-
-      fs.writeFileSync(
-        getFullProjectPath(c.path),
-        c.newContent,
-        "utf8"
-      );
-
-      applied.push(normalizePath(c.path));
-    }
-
-    if (!applied.length) {
-      return res.status(400).json({
-        success: false,
-        error: "No safe changes were applied.",
-      });
-    }
-
-    res.json({
-      success: true,
-      applied,
-    });
-  } catch (e) {
-    console.error(e);
-
-    res.status(500).json({
-      success: false,
-      error: e.message,
-    });
-  }
-});
-
-/* ============================================================
-   MAIN CHAT
-   ============================================================ */
-
-app.post("/api/chat", async (req, res) => {
-  const prompt = String(req.body?.prompt || "");
-  const mode = String(req.body?.mode || "vibe");
-
-  const selectedFile =
-    req.body?.selectedFile || null;
-
-  const selectedFileContent =
-    req.body?.selectedFileContent || null;
-
-  const contextFiles = Array.isArray(
-    req.body?.contextFiles
-  )
-    ? req.body.contextFiles
-    : [];
-
-  try {
-    /* --------------------------------------------------------
-       VIBE MODE — UI ANALYSIS
-       -------------------------------------------------------- */
-
-    if (
-      mode.toLowerCase() === "vibe" &&
-      isUiStylingRequest(prompt)
-    ) {
-      return res.json({
-        success: true,
-
-        response: buildUiStylingAnalysis(
-          prompt,
-          contextFiles,
-          selectedFile,
-          selectedFileContent
-        ),
-      });
-    }
-
-    /* --------------------------------------------------------
-       VIBE MODE — FILE ANALYSIS
-       -------------------------------------------------------- */
-
-    if (
-      mode.toLowerCase() === "vibe" &&
-      selectedFile &&
-      isFileFunctionRequest(prompt)
-    ) {
-      const source =
-        selectedFileContent ||
-        (isSafeProjectPath(selectedFile)
-          ? readProjectFile(selectedFile)
-          : null);
-
-      if (source) {
         return res.json({
-          success: true,
-
-          response: buildFileFunctionSummary(
-            source,
-            selectedFile
-          ),
+          plan:
+            buildDeterministicAgentPlan(
+              prompt
+            ),
         });
       }
-    }
 
-    const lower = prompt.toLowerCase();
-
-    /* --------------------------------------------------------
-       SELECTED FILE
-       -------------------------------------------------------- */
-
-    if (
-      selectedFile &&
-      (lower.includes("selected file") ||
-        lower.includes("selected file name") ||
-        lower.includes("file selected"))
-    ) {
-      return res.json({
-        success: true,
-
-        response: `The selected file is \`${normalizePath(
-          selectedFile
-        )}\`.`,
-      });
-    }
-
-    /* --------------------------------------------------------
-       PROJECT CONTEXT
-       -------------------------------------------------------- */
-
-    if (
-      lower.includes("project context") &&
-      (lower.includes("file path") ||
-        lower.includes("file paths") ||
-        lower.includes("context files"))
-    ) {
-      const paths = contextFiles.length
-        ? contextFiles
-        : selectedFile
-        ? [selectedFile]
-        : [];
-
-      return res.json({
-        success: true,
-
-        response: paths.length
-          ? `Project context files:\n\n${paths
-              .map(
-                (f) =>
-                  `- \`${normalizePath(f)}\``
+      const safeFiles =
+        contextFiles
+          .filter(
+            (file) =>
+              typeof file ===
+                "string" &&
+              isSafeProjectPath(
+                file
               )
-              .join("\n")}`
-          : "No project context files are currently selected.",
+          )
+          .map(normalizePath)
+          .slice(0, 3);
+
+      const context =
+        safeFiles
+          .map((file) => {
+            try {
+              return [
+                `FILE: ${file}`,
+                readProjectFile(
+                  file
+                ),
+              ].join("\n");
+            } catch {
+              return "";
+            }
+          })
+          .filter(Boolean)
+          .join("\n\n");
+
+      const systemPrompt = [
+        "You are the VibeCoder EDU planning agent.",
+        "Create a short, practical coding plan.",
+        "Do not claim that files have already been changed.",
+        "Use only files present in the supplied context.",
+        "Return valid JSON only.",
+        'Format: {"summary":"...","steps":[{"step":1,"title":"...","description":"..."}]}',
+      ].join("\n");
+
+      const aiResult =
+        await callOllama(
+          [
+            `USER REQUEST:\n${prompt}`,
+            `MODE:\n${mode}`,
+            `PROJECT CONTEXT:\n${
+              context ||
+              "No selected context."
+            }`,
+          ].join("\n\n"),
+          systemPrompt
+        );
+
+      const parsed =
+        extractJson(
+          aiResult
+        );
+
+      res.json({
+        plan:
+          parsed || {
+            summary:
+              "AI-generated plan",
+            steps: [
+              {
+                step: 1,
+                title:
+                  "Analyze request",
+                description:
+                  aiResult ||
+                  "Analyze the requested change.",
+              },
+            ],
+          },
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message:
+          error.message ||
+          "Agent planning failed.",
       });
     }
+  }
+);
 
-    /* --------------------------------------------------------
-       EDUCATION MODE
-       -------------------------------------------------------- */
+/* =========================================================
+   DEBUGGING AGENT
+========================================================= */
 
-    if (mode.toLowerCase() === "education") {
-      const source =
-        selectedFileContent ||
-        (selectedFile &&
-        isSafeProjectPath(selectedFile)
-          ? readProjectFile(selectedFile)
-          : null);
+app.post(
+  "/api/agent/debug",
+  async (req, res) => {
+    try {
+      const prompt =
+        String(
+          req.body?.prompt || ""
+        ).trim();
 
-      if (source) {
-        return res.json({
-          success: true,
+      const selectedFile =
+        String(
+          req.body
+            ?.selectedFile || ""
+        );
 
-          response: buildEducationLesson(
-            source,
-            selectedFile || "Selected file",
-            prompt
-          ),
+      const selectedFileContent =
+        String(
+          req.body
+            ?.selectedFileContent ||
+            ""
+        );
+
+      if (!selectedFile) {
+        return res.status(400).json({
+          message:
+            "Select a file to debug.",
         });
       }
+
+      let content =
+        selectedFileContent;
+
+      if (!content) {
+        content =
+          readProjectFile(
+            selectedFile
+          );
+      }
+
+      const diagnostics = [];
+
+      if (
+        /\bhandleBuild\b/.test(
+          content
+        )
+      ) {
+        diagnostics.push(
+          "The file contains a build handler."
+        );
+      }
+
+      if (
+        /fetch\s*\(/.test(
+          content
+        )
+      ) {
+        diagnostics.push(
+          "The file performs a network request."
+        );
+      }
+
+      if (
+        /response\.json\s*\(/.test(
+          content
+        )
+      ) {
+        diagnostics.push(
+          "The file parses JSON responses."
+        );
+      }
+
+      if (
+        /try\s*{/.test(
+          content
+        ) &&
+        /catch\s*\(/.test(
+          content
+        )
+      ) {
+        diagnostics.push(
+          "The file contains error handling."
+        );
+      }
+
+      if (
+        /\baiResponse\b/.test(
+          content
+        )
+      ) {
+        diagnostics.push(
+          "The file manages AI response state."
+        );
+      }
+
+      const result = {
+        problem:
+          prompt ||
+          "No specific problem requested.",
+        why:
+          diagnostics.length
+            ? diagnostics.join(
+                " "
+              )
+            : "No obvious diagnostic pattern was detected.",
+        fix:
+          "Review the identified area against the intended behavior and test the affected workflow.",
+        confidence:
+          diagnostics.length
+            ? "medium"
+            : "low",
+      };
+
+      res.json({
+        result,
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message:
+          error.message ||
+          "Debugging failed.",
+      });
     }
+  }
+);
 
-    /* --------------------------------------------------------
-       NORMAL AI CHAT
-       -------------------------------------------------------- */
+/* =========================================================
+   CONTROLLED CHANGE HELPERS
+========================================================= */
 
-    const safe = contextFiles
-      .filter(isSafeProjectPath)
-      .map((file) => ({
-        path: file,
-        content:
-          readProjectFile(file)?.slice(0, 12000) ||
-          "",
-      }));
-
-    const system = `You are VibeCoder EDU, a local AI coding assistant.
-
-Always prioritize the user's exact request.
-
-Use project files only as relevant supporting context.
-
-Never invent files, functions, APIs, or behavior.
-
-Never claim to have changed files unless the system actually changed them.
-
-Keep answers beginner-friendly and practical.`;
-
-    const user = `USER REQUEST:
-${prompt}
-
-SELECTED FILE:
-${selectedFile || "None"}
-
-SELECTED FILE CONTENT:
-${selectedFileContent || "None"}
-
-PROJECT CONTEXT:
-${JSON.stringify(safe, null, 2)}
-
-Answer the USER REQUEST directly.`;
-
-    const response = await callOllama(
-      user,
-      system
+function extractRequestedButtonText(
+  prompt = ""
+) {
+  const match =
+    prompt.match(
+      /button(?:\s+text)?\s+(?:called|named|with text)\s+["']([^"']+)["']/i
     );
 
-    res.json({
-      success: true,
-      response,
-    });
-  } catch (e) {
-    console.error("CHAT ERROR:", e);
+  return match
+    ? match[1]
+    : "";
+}
 
-    res.status(500).json({
-      success: false,
-      error:
-        "Could not connect to the local AI service.",
-      details: e.message,
+function validateControlledChanges(
+  parsed,
+  allowedFiles
+) {
+  if (
+    !parsed ||
+    !Array.isArray(
+      parsed.changes
+    )
+  ) {
+    throw new Error(
+      "AI did not return a valid changes array."
+    );
+  }
+
+  const allowed =
+    new Set(
+      allowedFiles.map(
+        canonicalPath
+      )
+    );
+
+  const changes =
+    parsed.changes.map(
+      (change) => {
+        const filePath =
+          normalizePath(
+            change?.path || ""
+          );
+
+        if (!filePath) {
+          throw new Error(
+            "A proposed change is missing its file path."
+          );
+        }
+
+        if (
+          !allowed.has(
+            canonicalPath(
+              filePath
+            )
+          )
+        ) {
+          throw new Error(
+            `AI proposed a file outside the approved context: ${filePath}`
+          );
+        }
+
+        if (
+          typeof change?.description !==
+          "string"
+        ) {
+          throw new Error(
+            `Change description missing for ${filePath}.`
+          );
+        }
+
+        if (
+          typeof change?.oldContent !==
+          "string"
+        ) {
+          throw new Error(
+            `Original content missing for ${filePath}.`
+          );
+        }
+
+        if (
+          typeof change?.newContent !==
+          "string"
+        ) {
+          throw new Error(
+            `New content missing for ${filePath}.`
+          );
+        }
+
+        return {
+          path: filePath,
+          description:
+            change.description,
+          oldContent:
+            change.oldContent,
+          newContent:
+            change.newContent,
+        };
+      }
+    );
+
+  return changes;
+}
+
+/* =========================================================
+   DETERMINISTIC DARK MODE CHANGE
+========================================================= */
+
+function buildDeterministicDarkModeChanges(
+  allowedFiles,
+  prompt = ""
+) {
+  const appPath =
+    allowedFiles.find(
+      (file) =>
+        canonicalPath(file) ===
+        "src/app.tsx"
+    );
+
+  const cssPath =
+    allowedFiles.find(
+      (file) =>
+        canonicalPath(file) ===
+        "src/app.css"
+    );
+
+  const changes = [];
+
+  if (
+    cssPath &&
+    isDarkBlueRequest(prompt)
+  ) {
+    const oldContent =
+      readProjectFile(
+        cssPath
+      );
+
+    let newContent =
+      oldContent;
+
+    const marker =
+      "vibecoder-safe-dark-blue";
+
+    if (
+      !newContent.includes(
+        marker
+      )
+    ) {
+      newContent += `
+
+/* VibeCoder EDU — Safe Mode dark blue */
+.${marker} {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.${marker} .panel,
+.${marker} .builder-card {
+  background: #1e293b;
+  color: #f8fafc;
+}
+`;
+    }
+
+    changes.push({
+      path: cssPath,
+      description:
+        "Add a scoped dark-blue background style without replacing the existing application styles.",
+      oldContent,
+      newContent,
+    });
+
+    if (appPath) {
+      const appOldContent =
+        readProjectFile(
+          appPath
+        );
+
+      let appNewContent =
+        appOldContent;
+
+      if (
+        !appNewContent.includes(
+          marker
+        )
+      ) {
+        if (
+          /<div\s+className=\{`app\s*\$\{/.test(
+            appNewContent
+          )
+        ) {
+          appNewContent =
+            appNewContent.replace(
+              /className=\{`app\s*(\$\{[^}]+\})?`/,
+              (
+                match,
+                expression
+              ) => {
+                if (expression) {
+                  return `className={\`app ${marker} ${expression}\`}`;
+                }
+
+                return `className="${marker}"`;
+              }
+            );
+        } else {
+          appNewContent =
+            appNewContent.replace(
+              /<div\s+className="app"/,
+              `<div className="app ${marker}"`
+            );
+        }
+      }
+
+      changes.push({
+        path: appPath,
+        description:
+          "Apply the scoped dark-blue class to the main application container.",
+        oldContent:
+          appOldContent,
+        newContent:
+          appNewContent,
+      });
+    }
+
+    return changes;
+  }
+
+  if (cssPath) {
+    const oldContent =
+      readProjectFile(
+        cssPath
+      );
+
+    let newContent =
+      oldContent;
+
+    if (
+      !newContent.includes(
+        "vibecoder-safe-dark-mode"
+      )
+    ) {
+      newContent += `
+
+/* VibeCoder EDU — Safe Mode dark theme */
+.vibecoder-safe-dark-mode {
+  background: #111827;
+  color: #f9fafb;
+}
+
+.vibecoder-safe-dark-mode .panel,
+.vibecoder-safe-dark-mode .builder-card {
+  background: #1f2937;
+  color: #f9fafb;
+}
+`;
+    }
+
+    changes.push({
+      path: cssPath,
+      description:
+        "Add a scoped dark-mode style class without replacing the existing application styles.",
+      oldContent,
+      newContent,
     });
   }
-});
 
-/* ============================================================
-   START SERVER
-   ============================================================ */
+  if (appPath) {
+    const oldContent =
+      readProjectFile(
+        appPath
+      );
 
-app.listen(PORT, () =>
-  console.log(
-    `VibeCoder backend running at http://localhost:${PORT}`
-  )
+    let newContent =
+      oldContent;
+
+    if (
+      !newContent.includes(
+        "vibecoder-safe-dark-mode"
+      )
+    ) {
+      newContent =
+        newContent.replace(
+          /return\s*\(\s*<div className="app">/,
+          `return (
+    <div className="app vibecoder-safe-dark-mode">`
+        );
+    }
+
+    changes.push({
+      path: appPath,
+      description:
+        "Apply the new scoped dark-mode class to the main application container.",
+      oldContent,
+      newContent,
+    });
+  }
+
+  return changes;
+}
+
+/* =========================================================
+   PROPOSE CONTROLLED CHANGES
+========================================================= */
+
+app.post(
+  "/api/agent/changes",
+  async (req, res) => {
+    try {
+      const prompt =
+        String(
+          req.body?.prompt || ""
+        ).trim();
+
+      const contextFiles =
+        Array.isArray(
+          req.body?.contextFiles
+        )
+          ? req.body
+              .contextFiles
+          : [];
+
+      if (!prompt) {
+        return res.status(400).json({
+          message:
+            "Prompt is required.",
+        });
+      }
+
+      const safeFiles =
+        contextFiles
+          .filter(
+            (file) =>
+              typeof file ===
+                "string" &&
+              isSafeProjectPath(
+                file
+              )
+          )
+          .map(normalizePath)
+          .filter(
+            (file, index, array) =>
+              array.findIndex(
+                (item) =>
+                  canonicalPath(
+                    item
+                  ) ===
+                  canonicalPath(
+                    file
+                  )
+              ) === index
+          )
+          .slice(0, 3);
+
+      if (
+        safeFiles.length === 0
+      ) {
+        return res.status(400).json({
+          message:
+            "Select a file or add AI context before proposing changes.",
+        });
+      }
+
+      if (
+        isDarkModeRequest(
+          prompt
+        ) ||
+        isBackgroundColorRequest(
+          prompt
+        )
+      ) {
+        const stylingFiles =
+          safeFiles.filter(
+            (file) =>
+              /^(src\/app\.tsx|src\/app\.css)$/i.test(
+                file
+              )
+          );
+
+        if (
+          stylingFiles.length > 0
+        ) {
+          const deterministic =
+            buildDeterministicDarkModeChanges(
+              stylingFiles,
+              prompt
+            );
+
+          if (
+            deterministic.length
+          ) {
+            return res.json({
+              changes:
+                deterministic,
+            });
+          }
+        }
+      }
+
+      const fileContents =
+        safeFiles
+          .map((file) => {
+            try {
+              const content =
+                readProjectFile(
+                  file
+                );
+
+              if (
+                content.length >
+                50 * 1024
+              ) {
+                return [
+                  `FILE: ${file}`,
+                  "CONTENT OMITTED: file is too large for controlled editing.",
+                ].join("\n");
+              }
+
+              return [
+                `FILE: ${file}`,
+                content,
+              ].join("\n");
+            } catch {
+              return "";
+            }
+          })
+          .filter(Boolean)
+          .join("\n\n");
+
+      const requestedButtonText =
+        extractRequestedButtonText(
+          prompt
+        );
+
+      const systemPrompt = [
+        "You are the VibeCoder EDU Safe Mode controlled editing agent.",
+        "",
+        "Your job is to propose changes, NOT apply them.",
+        "",
+        "Safety rules:",
+        "1. Only modify files included in the supplied context.",
+        "2. Never invent a file path.",
+        "3. Return the complete original file in oldContent.",
+        "4. Return the complete proposed file in newContent.",
+        "5. Do not omit unchanged code.",
+        "6. Make the smallest practical change.",
+        "7. Preserve existing functionality.",
+        "8. Never claim that the files have already been changed.",
+        "9. Return JSON only.",
+        "",
+        'Required format: {"changes":[{"path":"exact existing path","description":"what changed","oldContent":"complete original file","newContent":"complete updated file"}]}',
+        requestedButtonText
+          ? `If the request concerns a button, the requested button text is "${requestedButtonText}".`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      const aiResult =
+  await callOllama(
+        
+          [
+            `USER REQUEST:\n${prompt}`,
+            `APPROVED CONTEXT FILES:\n${safeFiles.join(
+              "\n"
+            )}`,
+            `PROJECT SOURCE:\n${fileContents}`,
+          ].join("\n\n"),
+          systemPrompt
+        );
+
+      const parsed =
+        extractJson(
+          aiResult
+        );
+
+      const changes =
+        validateControlledChanges(
+          parsed,
+          safeFiles
+        );
+
+      res.json({
+        changes,
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message:
+          error.message ||
+          "Controlled changes failed.",
+      });
+    }
+  }
+);
+
+/* =========================================================
+   APPLY APPROVED CHANGES
+========================================================= */
+
+app.post(
+  "/api/agent/apply",
+  (req, res) => {
+    try {
+      const changes =
+        Array.isArray(
+          req.body?.changes
+        )
+          ? req.body.changes
+          : [];
+
+      if (
+        changes.length === 0
+      ) {
+        return res.status(400).json({
+          message:
+            "No changes were supplied.",
+        });
+      }
+
+      const applied = [];
+
+      for (
+        const change of changes
+      ) {
+        const filePath =
+          normalizePath(
+            change?.path || ""
+          );
+
+        const newContent =
+          change?.newContent;
+
+        if (
+          !isSafeProjectPath(
+            filePath
+          )
+        ) {
+          throw new Error(
+            `Unsafe file path: ${filePath}`
+          );
+        }
+
+        if (
+          typeof newContent !==
+          "string"
+        ) {
+          throw new Error(
+            `Invalid new content for ${filePath}`
+          );
+        }
+
+        const fullPath =
+          getFullProjectPath(
+            filePath
+          );
+
+        if (
+          !fs.existsSync(
+            fullPath
+          )
+        ) {
+          throw new Error(
+            `File does not exist: ${filePath}`
+          );
+        }
+
+        const currentContent =
+          fs.readFileSync(
+            fullPath,
+            "utf8"
+          );
+
+        if (
+          typeof change.oldContent ===
+            "string" &&
+          currentContent !==
+            change.oldContent
+        ) {
+          throw new Error(
+            `File changed after proposal was created: ${filePath}. Generate a new proposal first.`
+          );
+        }
+
+        fs.writeFileSync(
+          fullPath,
+          newContent,
+          "utf8"
+        );
+
+        applied.push(
+          filePath
+        );
+      }
+
+      res.json({
+        success: true,
+        applied,
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(400).json({
+        message:
+          error.message ||
+          "Unable to apply changes.",
+      });
+    }
+  }
+);
+
+/* =========================================================
+   NORMAL CHAT
+========================================================= */
+
+app.post(
+  "/api/chat",
+  async (req, res) => {
+    try {
+      const prompt =
+        String(
+          req.body?.prompt || ""
+        ).trim();
+
+      const mode =
+        String(
+          req.body?.mode ||
+            "vibe"
+        );
+
+      const selectedFile =
+        String(
+          req.body
+            ?.selectedFile || ""
+        );
+
+      const selectedFileContent =
+        String(
+          req.body
+            ?.selectedFileContent ||
+            ""
+        );
+
+      const contextFiles =
+        Array.isArray(
+          req.body?.contextFiles
+        )
+          ? req.body
+              .contextFiles
+          : [];
+
+      if (!prompt) {
+        return res.status(400).json({
+          message:
+            "Prompt is required.",
+        });
+      }
+
+      if (mode === "safe") {
+        return res.json({
+          response:
+            "Safe Mode uses the controlled review workflow. Use Review with AI to generate proposed changes before anything is applied.",
+        });
+      }
+
+      if (
+        mode === "vibe" &&
+        isUiStylingRequest(
+          prompt
+        )
+      ) {
+        return res.json({
+          response:
+            buildUiStylingAnalysis(
+              prompt
+            ),
+        });
+      }
+
+      if (
+        mode === "vibe" &&
+        selectedFile &&
+        selectedFileContent &&
+        isFileFunctionRequest(
+          prompt
+        )
+      ) {
+        return res.json({
+          response:
+            buildFileFunctionSummary(
+              selectedFile,
+              selectedFileContent
+            ),
+        });
+      }
+
+      let sourceContent =
+        selectedFileContent;
+
+      if (
+        !sourceContent &&
+        selectedFile
+      ) {
+        try {
+          sourceContent =
+            readProjectFile(
+              selectedFile
+            );
+        } catch {}
+      }
+
+      const safeContextFiles =
+        contextFiles
+          .filter(
+            (file) =>
+              typeof file ===
+                "string" &&
+              isSafeProjectPath(
+                file
+              )
+          )
+          .map(normalizePath)
+          .filter(
+            (file, index, array) =>
+              array.findIndex(
+                (item) =>
+                  canonicalPath(
+                    item
+                  ) ===
+                  canonicalPath(
+                    file
+                  )
+              ) === index
+          )
+          .slice(0, 3);
+
+      const context =
+        safeContextFiles
+          .map((file) => {
+            try {
+              return [
+                `FILE: ${file}`,
+                readProjectFile(
+                  file
+                ),
+              ].join("\n");
+            } catch {
+              return "";
+            }
+          })
+          .filter(Boolean)
+          .join("\n\n");
+
+      if (
+        mode ===
+        "education"
+      ) {
+        return res.json({
+          response:
+            buildEducationLesson(
+              prompt,
+              sourceContent ||
+                context
+            ),
+        });
+      }
+
+      const systemPrompt = [
+        "You are VibeCoder EDU, a local AI coding assistant.",
+        "Always prioritize the user's exact request.",
+        "Never invent files, functions, APIs, or project details.",
+        "Never claim to have changed files.",
+        "Keep answers beginner-friendly and practical.",
+        "When source code is provided, ground your explanation in that source.",
+      ].join("\n");
+
+      const aiPrompt = [
+        `USER REQUEST:\n${prompt}`,
+        `MODE:\n${mode}`,
+        selectedFile
+          ? `SELECTED FILE:\n${selectedFile}`
+          : "",
+        sourceContent
+          ? `SELECTED FILE CONTENT:\n${sourceContent}`
+          : "",
+        context
+          ? `PROJECT CONTEXT:\n${context}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const responseText =
+        await callGemini(
+          aiPrompt,
+          systemPrompt
+        );
+
+      res.json({
+        response:
+          responseText ||
+          "Gemini returned an empty response.",
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message:
+          error.message ||
+          "AI request failed.",
+      });
+    }
+  }
+);
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `VibeCoder backend running at http://localhost:${PORT}`
+    );
+
+    console.log(
+      `Project root: ${PROJECT_ROOT}`
+    );
+
+    console.log(
+      `Ollama model: ${OLLAMA_MODEL}`
+    );
+  }
 );

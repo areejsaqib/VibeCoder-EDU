@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { ReactElement } from "react";
 import "./App.css";
 
 type Mode = "vibe" | "education" | "safe";
@@ -29,10 +30,10 @@ type PlanStep = {
 };
 
 type ProposedChange = {
-  action?: string;
-  path?: string;
-  reason?: string;
-  content?: string;
+  path: string;
+  description: string;
+  oldContent: string;
+  newContent: string;
 };
 
 type DebugResult = {
@@ -44,7 +45,6 @@ type DebugResult = {
 
 function App() {
   const [mode, setMode] = useState<Mode>("vibe");
-
   const [prompt, setPrompt] = useState("");
 
   const [projectFiles, setProjectFiles] = useState<ProjectItem[]>([]);
@@ -60,6 +60,7 @@ function App() {
 
   const [agentPlan, setAgentPlan] = useState<PlanStep[]>([]);
   const [debugResult, setDebugResult] = useState<DebugResult | null>(null);
+
   const [proposedChanges, setProposedChanges] = useState<ProposedChange[]>(
     []
   );
@@ -73,9 +74,7 @@ function App() {
     "Ready for your next build."
   );
 
-  /* =========================================================
-     HELPERS
-  ========================================================= */
+  const [applyingChanges, setApplyingChanges] = useState(false);
 
   const getItemPath = (item: ProjectItem): string => {
     if (typeof item === "string") {
@@ -93,7 +92,6 @@ function App() {
 
   const getItemName = (item: ProjectItem): string => {
     const rawPath = getItemPath(item);
-
     const parts = rawPath.split(/[\\/]+/).filter(Boolean);
 
     return parts[parts.length - 1] || rawPath || "Unnamed";
@@ -116,11 +114,59 @@ function App() {
     );
   };
 
+  const normalizeContextPath = (filePath: string): string => {
+    return filePath
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\.\/+/, "")
+      .replace(/^\/+/, "")
+      .replace(/\/+/g, "/")
+      .toLowerCase();
+  };
+
+  const handleSelectFile = async (filePath: string) => {
+    if (!filePath) return;
+
+    setSelectedFile(filePath);
+    setLoading(true);
+    setLoadingAction("Reading file...");
+    setStatusMessage(`Loading ${filePath}`);
+
+    try {
+      const response = await fetch(
+        `http://localhost:3001/api/project/file?path=${encodeURIComponent(
+          filePath
+        )}`
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to read file.");
+      }
+
+      const data = await response.json();
+
+      const content =
+        typeof data.content === "string"
+          ? data.content
+          : "";
+
+      setSelectedFileContent(content);
+      setStatusMessage(`Selected ${filePath}`);
+    } catch (error) {
+      console.error(error);
+      setSelectedFileContent("");
+      setStatusMessage("Unable to read selected file.");
+    } finally {
+      setLoading(false);
+      setLoadingAction("");
+    }
+  };
+
   const renderProjectItems = (
     items: ProjectItem[],
     level = 0
-  ): React.ReactElement[] => {
-    const rendered: React.ReactElement[] = [];
+  ): ReactElement[] => {
+    const rendered: ReactElement[] = [];
 
     items.forEach((item, index) => {
       const itemPath = getItemPath(item);
@@ -189,10 +235,6 @@ function App() {
     }
   };
 
-  /* =========================================================
-     DEBUG RESULT PARSER
-  ========================================================= */
-
   const parseDebugContent = (content: string): DebugResult => {
     const getSection = (
       sectionName: string,
@@ -215,46 +257,29 @@ function App() {
 
       const match = content.match(pattern);
 
-      return match
-        ? match[1].trim()
-        : "";
+      return match ? match[1].trim() : "";
     };
-
-    const problem = getSection(
-      "PROBLEM",
-      ["WHY", "SUGGESTED FIX", "CONFIDENCE"]
-    );
-
-    const why = getSection(
-      "WHY",
-      ["SUGGESTED FIX", "CONFIDENCE"]
-    );
-
-    const fix = getSection(
-      "SUGGESTED FIX",
-      ["CONFIDENCE"]
-    );
-
-    const confidence = getSection(
-      "CONFIDENCE",
-      []
-    );
 
     return {
       problem:
-        problem || "No definite problem identified.",
+        getSection("PROBLEM", [
+          "WHY",
+          "SUGGESTED FIX",
+          "CONFIDENCE",
+        ]) || "No definite problem identified.",
       why:
-        why || "No explanation available.",
+        getSection("WHY", [
+          "SUGGESTED FIX",
+          "CONFIDENCE",
+        ]) || "No explanation available.",
       fix:
-        fix || "No fix suggested.",
+        getSection("SUGGESTED FIX", [
+          "CONFIDENCE",
+        ]) || "No fix suggested.",
       confidence:
-        confidence || "unknown",
+        getSection("CONFIDENCE", []) || "unknown",
     };
   };
-
-  /* =========================================================
-     OPEN PROJECT
-     ========================================================= */
 
   const handleOpenProject = async () => {
     setLoading(true);
@@ -262,7 +287,9 @@ function App() {
     setStatusMessage("Scanning your project structure...");
 
     try {
-      const response = await fetch("http://localhost:3001/api/project");
+      const response = await fetch(
+        "http://localhost:3001/api/project"
+      );
 
       if (!response.ok) {
         throw new Error("Unable to open project.");
@@ -294,63 +321,19 @@ function App() {
     }
   };
 
-  /* =========================================================
-     SELECT FILE
-     ========================================================= */
-
-  const handleSelectFile = async (filePath: string) => {
-    if (!filePath) return;
-
-    setSelectedFile(filePath);
-    setLoading(true);
-    setLoadingAction("Reading file...");
-    setStatusMessage(`Loading ${filePath}`);
-
-    try {
-      const response = await fetch(
-        `http://localhost:3001/api/project/file?path=${encodeURIComponent(
-          filePath
-        )}`
-      );
-
-      if (!response.ok) {
-        throw new Error("Unable to read file.");
-      }
-
-      const data = await response.json();
-
-      const content =
-        typeof data.content === "string"
-          ? data.content
-          : "";
-
-      setSelectedFileContent(content);
-
-      setStatusMessage(`Selected ${filePath}`);
-    } catch (error) {
-      console.error(error);
-
-      setSelectedFileContent("");
-      setStatusMessage("Unable to read selected file.");
-    } finally {
-      setLoading(false);
-      setLoadingAction("");
-    }
-  };
-
-  /* =========================================================
-     ADD AI CONTEXT
-     ========================================================= */
-
   const handleAddContext = async () => {
     if (!selectedFile) {
-      setStatusMessage("Select a file before adding AI context.");
+      setStatusMessage(
+        "Select a file before adding AI context."
+      );
       return;
     }
 
     setLoading(true);
     setLoadingAction("Adding context...");
-    setStatusMessage("Preparing selected file for the AI...");
+    setStatusMessage(
+      "Preparing selected file for the AI..."
+    );
 
     try {
       const response = await fetch(
@@ -373,7 +356,9 @@ function App() {
 
       setContextFiles((previous) => {
         const alreadyExists = previous.some(
-          (file) => file.path === selectedFile
+          (file) =>
+            normalizeContextPath(file.path) ===
+            normalizeContextPath(selectedFile)
         );
 
         if (alreadyExists) {
@@ -395,16 +380,15 @@ function App() {
       );
     } catch (error) {
       console.error(error);
-      setStatusMessage("Unable to add AI context.");
+
+      setStatusMessage(
+        "Unable to add AI context."
+      );
     } finally {
       setLoading(false);
       setLoadingAction("");
     }
   };
-
-  /* =========================================================
-     SMART CONTEXT
-     ========================================================= */
 
   const handleSmartContext = async () => {
     if (!prompt.trim()) {
@@ -416,7 +400,9 @@ function App() {
 
     setLoading(true);
     setLoadingAction("Finding context...");
-    setStatusMessage("AI is selecting the most relevant files...");
+    setStatusMessage(
+      "AI is selecting the most relevant files..."
+    );
 
     try {
       const response = await fetch(
@@ -446,62 +432,103 @@ function App() {
         ? data.context
         : [];
 
-      const normalized = suggestions.map((file: any) => {
-        if (typeof file === "string") {
+      const normalized: ContextFile[] = suggestions
+        .map((file: any) => {
+          if (typeof file === "string") {
+            return {
+              path: file.trim(),
+              name:
+                file.split(/[\\/]+/).pop() ||
+                file,
+              reason:
+                "Relevant to your request",
+            };
+          }
+
           return {
-            path: file,
-            name: file.split(/[\\/]+/).pop() || file,
-            score: undefined,
-            reason: "Relevant to your request",
+            path:
+              typeof file.path === "string"
+                ? file.path.trim()
+                : typeof file.relativePath === "string"
+                ? file.relativePath.trim()
+                : typeof file.filePath === "string"
+                ? file.filePath.trim()
+                : typeof file.name === "string"
+                ? file.name.trim()
+                : "",
+            name:
+              file.name ||
+              file.path ||
+              file.relativePath ||
+              "Unnamed",
+            score: file.score,
+            reason:
+              file.reason ||
+              "Relevant to your request",
           };
+        })
+        .filter(
+          (file: ContextFile) =>
+            file.path.trim().length > 0
+        );
+
+      /*
+       * Smart Context can receive the same file more than once
+       * from the backend with slightly different path formatting.
+       *
+       * We normalize the path before comparing:
+       * - removes surrounding spaces
+       * - converts Windows "\" to "/"
+       * - removes "./" and leading "/"
+       * - removes repeated "/"
+       * - compares case-insensitively
+       */
+      const seenPaths = new Set<string>();
+
+      const uniqueFiles = normalized.filter((file) => {
+        const normalizedPath =
+          normalizeContextPath(file.path);
+
+        if (seenPaths.has(normalizedPath)) {
+          return false;
         }
 
-        return {
-          path:
-            file.path ||
-            file.relativePath ||
-            file.filePath ||
-            file.name ||
-            "",
-          name:
-            file.name ||
-            file.path ||
-            file.relativePath ||
-            "Unnamed",
-          score: file.score,
-          reason: file.reason || "Relevant to your request",
-        };
+        seenPaths.add(normalizedPath);
+        return true;
       });
 
-      setSmartContextFiles(normalized);
+      setSmartContextFiles(uniqueFiles);
 
       setStatusMessage(
-        normalized.length
-          ? `${normalized.length} relevant files found.`
+        uniqueFiles.length
+          ? `${uniqueFiles.length} unique relevant file(s) found.`
           : "No strong context matches found."
       );
     } catch (error) {
       console.error(error);
-      setStatusMessage("Smart Context could not complete.");
+
+      setStatusMessage(
+        "Smart Context could not complete."
+      );
     } finally {
       setLoading(false);
       setLoadingAction("");
     }
   };
 
-  /* =========================================================
-     AGENT PLAN
-     ========================================================= */
-
   const handleAgentPlan = async () => {
     if (!prompt.trim()) {
-      setStatusMessage("Describe what you want the agent to build first.");
+      setStatusMessage(
+        "Describe what you want the agent to build first."
+      );
       return;
     }
 
     setLoading(true);
     setLoadingAction("Planning...");
-    setStatusMessage("Agent is creating a build plan...");
+    setStatusMessage(
+      "Agent is creating a build plan..."
+    );
 
     try {
       const response = await fetch(
@@ -516,7 +543,9 @@ function App() {
             mode,
             contextFiles:
               contextFiles.length > 0
-                ? contextFiles.map((file) => file.path)
+                ? contextFiles.map(
+                    (file) => file.path
+                  )
                 : selectedFile
                 ? [selectedFile]
                 : [],
@@ -552,10 +581,15 @@ function App() {
           }
 
           return {
-            step: step.step || index + 1,
-            title: step.title || `Step ${index + 1}`,
+            step:
+              step.step ||
+              index + 1,
+            title:
+              step.title ||
+              `Step ${index + 1}`,
             description:
-              step.description || "Agent workflow step",
+              step.description ||
+              "Agent workflow step",
           };
         }
       );
@@ -569,26 +603,29 @@ function App() {
       );
     } catch (error) {
       console.error(error);
-      setStatusMessage("Agent planning failed.");
+
+      setStatusMessage(
+        "Agent planning failed."
+      );
     } finally {
       setLoading(false);
       setLoadingAction("");
     }
   };
 
-  /* =========================================================
-     DEBUGGING AGENT
-     ========================================================= */
-
   const handleDebug = async () => {
     if (!selectedFile) {
-      setStatusMessage("Select a file to debug.");
+      setStatusMessage(
+        "Select a file to debug."
+      );
       return;
     }
 
     setLoading(true);
     setLoadingAction("Debugging...");
-    setStatusMessage(`Analyzing ${selectedFile}...`);
+    setStatusMessage(
+      `Analyzing ${selectedFile}...`
+    );
 
     try {
       const response = await fetch(
@@ -615,23 +652,6 @@ function App() {
 
       const data = await response.json();
 
-      /*
-        The backend returns:
-
-        {
-          success: true,
-          result: {
-            title: "Diagnostics",
-            content: "..."
-          }
-        }
-
-        The UI needs separate:
-        problem / why / fix / confidence
-
-        So we parse the backend's markdown content here.
-      */
-
       let parsedDebug: DebugResult;
 
       if (
@@ -656,9 +676,10 @@ function App() {
         data?.result &&
         typeof data.result.content === "string"
       ) {
-        parsedDebug = parseDebugContent(
-          data.result.content
-        );
+        parsedDebug =
+          parseDebugContent(
+            data.result.content
+          );
       } else if (
         data?.problem ||
         data?.why ||
@@ -699,16 +720,15 @@ function App() {
       );
     } catch (error) {
       console.error(error);
-      setStatusMessage("Debugging agent failed.");
+
+      setStatusMessage(
+        "Debugging agent failed."
+      );
     } finally {
       setLoading(false);
       setLoadingAction("");
     }
   };
-
-  /* =========================================================
-     PROPOSE CHANGES
-     ========================================================= */
 
   const handleProposeChanges = async () => {
     const filesForContext =
@@ -738,8 +758,12 @@ function App() {
     }
 
     setLoading(true);
-    setLoadingAction("Preparing changes...");
-    setStatusMessage("Agent is preparing controlled changes...");
+    setLoadingAction(
+      "Preparing changes..."
+    );
+    setStatusMessage(
+      "Agent is preparing controlled changes..."
+    );
 
     try {
       const response = await fetch(
@@ -752,9 +776,10 @@ function App() {
           body: JSON.stringify({
             prompt: prompt.trim(),
             mode,
-            contextFiles: filesForContext.map(
-              (file) => file.path
-            ),
+            contextFiles:
+              filesForContext.map(
+                (file) => file.path
+              ),
           }),
         }
       );
@@ -763,7 +788,8 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.message || "Could not prepare changes."
+          data.message ||
+            "Could not prepare changes."
         );
       }
 
@@ -776,14 +802,15 @@ function App() {
 
       setStatusMessage(
         changes.length
-          ? `${changes.length} controlled change(s) proposed.`
+          ? `${changes.length} controlled change(s) proposed. Review them before applying.`
           : "No changes proposed."
       );
     } catch (error: any) {
       console.error(error);
 
       setStatusMessage(
-        error?.message || "Controlled changes failed."
+        error?.message ||
+          "Controlled changes failed."
       );
     } finally {
       setLoading(false);
@@ -791,19 +818,133 @@ function App() {
     }
   };
 
-  /* =========================================================
-     BUILD
-     ========================================================= */
+  const handleApplyChanges = async () => {
+    if (proposedChanges.length === 0) {
+      setStatusMessage(
+        "There are no proposed changes to apply."
+      );
+      return;
+    }
 
-  const handleBuild = async () => {
+    const invalidChange =
+      proposedChanges.some(
+        (change) =>
+          !change.path ||
+          typeof change.newContent !== "string"
+      );
+
+    if (invalidChange) {
+      setStatusMessage(
+        "One or more proposed changes are incomplete."
+      );
+      return;
+    }
+
+    const approved = window.confirm(
+      `VibeCoder is ready to apply ${proposedChanges.length} approved change(s) to your project. Continue?`
+    );
+
+    if (!approved) {
+      setStatusMessage(
+        "Changes were not applied."
+      );
+      return;
+    }
+
+    setApplyingChanges(true);
+    setStatusMessage(
+      "Applying approved changes..."
+    );
+
+    try {
+      const response = await fetch(
+        "http://localhost:3001/api/agent/apply",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            changes: proposedChanges,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.message ||
+            "Could not apply changes."
+        );
+      }
+
+      const applied =
+        Array.isArray(data.applied)
+          ? data.applied
+          : [];
+
+      setStatusMessage(
+        applied.length
+          ? `${applied.length} change(s) applied successfully.`
+          : "Changes applied successfully."
+      );
+
+      setAiResponse(
+        `Safe Mode completed successfully.\n\nApplied changes:\n${applied
+          .map(
+            (path: string) =>
+              `✓ ${path}`
+          )
+          .join("\n")}`
+      );
+
+      setProposedChanges([]);
+
+      if (selectedFile) {
+        await handleSelectFile(
+          selectedFile
+        );
+      }
+    } catch (error: any) {
+      console.error(error);
+
+      setStatusMessage(
+        error?.message ||
+          "Unable to apply approved changes."
+      );
+    } finally {
+      setApplyingChanges(false);
+    }
+  };
+
+  const handleSafeBuild = async () => {
     if (!prompt.trim()) {
-      setStatusMessage("Tell VibeCoder what you want to build.");
+      setStatusMessage(
+        "Describe the change you want VibeCoder to review."
+      );
+      return;
+    }
+
+    setAiResponse("");
+    setProposedChanges([]);
+
+    await handleProposeChanges();
+  };
+
+  const handleNormalBuild = async () => {
+    if (!prompt.trim()) {
+      setStatusMessage(
+        "Tell VibeCoder what you want to build."
+      );
       return;
     }
 
     setLoading(true);
     setLoadingAction("Building...");
-    setStatusMessage("Local AI is working on your request...");
+    setStatusMessage(
+      "Local AI is working on your request..."
+    );
     setAiResponse("");
 
     try {
@@ -819,10 +960,11 @@ function App() {
             mode,
             selectedFile,
             selectedFileContent,
-
             contextFiles:
               contextFiles.length > 0
-                ? contextFiles.map((file) => file.path)
+                ? contextFiles.map(
+                    (file) => file.path
+                  )
                 : selectedFile
                 ? [selectedFile]
                 : [],
@@ -831,7 +973,9 @@ function App() {
       );
 
       if (!response.ok) {
-        throw new Error("Build request failed.");
+        throw new Error(
+          "Build request failed."
+        );
       }
 
       const data = await response.json();
@@ -846,10 +990,16 @@ function App() {
       setAiResponse(
         typeof result === "string"
           ? result
-          : JSON.stringify(result, null, 2)
+          : JSON.stringify(
+              result,
+              null,
+              2
+            )
       );
 
-      setStatusMessage("Build response received.");
+      setStatusMessage(
+        "Build response received."
+      );
     } catch (error) {
       console.error(error);
 
@@ -866,15 +1016,24 @@ function App() {
     }
   };
 
-  /* =========================================================
-     UI
-  ========================================================= */
+  const handleBuild = async () => {
+    if (mode === "safe") {
+      await handleSafeBuild();
+      return;
+    }
+
+    await handleNormalBuild();
+  };
 
   return (
-    <div className="app">
-
+    <div
+      className={`app ${
+        mode === "safe"
+          ? "vibecoder-safe-dark-mode"
+          : ""
+      }`}
+    >
       <header className="topbar">
-
         <div className="brand-area">
           <div className="brand-mark">
             <span>{"{"}</span>
@@ -903,22 +1062,20 @@ function App() {
             EDU
           </div>
         </div>
-
       </header>
 
       <main className="workspace">
-
         <aside className="sidebar">
-
           <section className="panel project-panel">
-
             <div className="panel-header">
               <div>
                 <span className="eyebrow">
                   WORKSPACE
                 </span>
 
-                <h2>Project Explorer</h2>
+                <h2>
+                  Project Explorer
+                </h2>
               </div>
 
               <span className="panel-count">
@@ -933,7 +1090,8 @@ function App() {
             >
               <span>＋</span>
 
-              {loadingAction === "Opening project..."
+              {loadingAction ===
+              "Opening project..."
                 ? "Opening..."
                 : "Open Project"}
             </button>
@@ -947,109 +1105,150 @@ function App() {
             </div>
 
             <div className="project-tree">
-
               {projectFiles.length > 0 ? (
-                renderProjectItems(projectFiles)
+                renderProjectItems(
+                  projectFiles
+                )
               ) : (
                 <div className="empty-tree">
-                  <div className="empty-icon">⌁</div>
+                  <div className="empty-icon">
+                    ⌁
+                  </div>
 
                   <strong>
                     Project explorer
                   </strong>
 
                   <span>
-                    Open your project to load its files.
+                    Open your project to
+                    load its files.
                   </span>
                 </div>
               )}
-
             </div>
-
           </section>
 
           <section className="panel">
-
             <div className="panel-header">
               <div>
                 <span className="eyebrow">
                   AI BEHAVIOR
                 </span>
 
-                <h2>Working Mode</h2>
+                <h2>
+                  Working Mode
+                </h2>
               </div>
             </div>
 
             <div className="mode-buttons">
-
               <button
                 className={`mode-button ${
-                  mode === "vibe" ? "active" : ""
+                  mode === "vibe"
+                    ? "active"
+                    : ""
                 }`}
-                onClick={() => setMode("vibe")}
+                onClick={() =>
+                  setMode("vibe")
+                }
               >
                 <span>✦</span>
-                Vibe Coding
+
+                <div>
+                  <strong>
+                    Vibe Coding
+                  </strong>
+
+                  <small>
+                    Build faster with AI
+                  </small>
+                </div>
               </button>
 
               <button
                 className={`mode-button ${
-                  mode === "education" ? "active" : ""
+                  mode === "education"
+                    ? "active"
+                    : ""
                 }`}
-                onClick={() => setMode("education")}
+                onClick={() =>
+                  setMode("education")
+                }
               >
                 <span>◈</span>
-                Education
+
+                <div>
+                  <strong>
+                    Education
+                  </strong>
+
+                  <small>
+                    Learn and understand
+                    the code
+                  </small>
+                </div>
               </button>
 
               <button
                 className={`mode-button ${
-                  mode === "safe" ? "active" : ""
+                  mode === "safe"
+                    ? "active"
+                    : ""
                 }`}
-                onClick={() => setMode("safe")}
+                onClick={() =>
+                  setMode("safe")
+                }
               >
                 <span>◇</span>
-                Safe Mode
+
+                <div>
+                  <strong>
+                    Safe Mode
+                  </strong>
+
+                  <small>
+                    Review changes before
+                    applying
+                  </small>
+                </div>
               </button>
-
             </div>
-
           </section>
-
         </aside>
 
         <section className="main-panel">
-
           <section className="builder-card">
-
             <div className="builder-glow"></div>
 
             <div className="builder-header">
-
               <div>
                 <span className="eyebrow">
                   LOCAL AI BUILDER
                 </span>
 
                 <h2>
-                  What are you building today?
+                  {mode === "vibe"
+                    ? "What are you building today?"
+                    : mode === "education"
+                    ? "What would you like to learn today?"
+                    : "What would you like to review safely?"}
                 </h2>
 
                 <p>
-                  Describe your idea, feature, bug, or
-                  learning goal. VibeCoder will help
-                  you turn it into working code.
+                  {mode === "vibe"
+                    ? "Describe your idea, feature, bug, or learning goal. VibeCoder will help you turn it into working code."
+                    : mode === "education"
+                    ? "Ask a coding question or share code you want to understand. VibeCoder will guide you step by step."
+                    : "Describe the change you want to make. VibeCoder will propose the changes first so you can review them before anything is applied."}
                 </p>
               </div>
 
               <div className="builder-orb">
                 <span>AI</span>
               </div>
-
             </div>
 
             <div className="prompt-wrapper">
-
               <div className="prompt-topline">
                 <span>
                   <span className="terminal-symbol">
@@ -1071,9 +1270,17 @@ function App() {
                 className="prompt-box"
                 value={prompt}
                 onChange={(event) =>
-                  setPrompt(event.target.value)
+                  setPrompt(
+                    event.target.value
+                  )
                 }
-                placeholder="Ask VibeCoder to build, explain, debug, or improve something..."
+                placeholder={
+                  mode === "vibe"
+                    ? "Ask VibeCoder to build, explain, debug, or improve something..."
+                    : mode === "education"
+                    ? "Ask VibeCoder to explain a coding concept or help you understand your code..."
+                    : "Describe a change you want to review before applying..."
+                }
               />
 
               <div className="prompt-footer">
@@ -1087,16 +1294,15 @@ function App() {
                   Local processing
                 </span>
               </div>
-
             </div>
 
             <div className="builder-actions">
-
               <div className="secondary-actions">
-
                 <button
                   className="secondary-button"
-                  onClick={handleAgentPlan}
+                  onClick={
+                    handleAgentPlan
+                  }
                   disabled={loading}
                 >
                   <span>◈</span>
@@ -1105,7 +1311,9 @@ function App() {
 
                 <button
                   className="secondary-button"
-                  onClick={handleProposeChanges}
+                  onClick={
+                    handleProposeChanges
+                  }
                   disabled={loading}
                 >
                   <span>◇</span>
@@ -1114,33 +1322,46 @@ function App() {
 
                 <button
                   className="secondary-button"
-                  onClick={handleDebug}
+                  onClick={
+                    handleDebug
+                  }
                   disabled={loading}
                 >
                   <span>⌁</span>
                   Debug
                 </button>
-
               </div>
 
               <button
                 className="build-button"
-                onClick={handleBuild}
-                disabled={loading}
+                onClick={
+                  handleBuild
+                }
+                disabled={
+                  loading ||
+                  applyingChanges
+                }
               >
                 <span className="build-icon">
-                  ✦
+                  {mode === "safe"
+                    ? "◇"
+                    : "✦"}
                 </span>
 
-                {loadingAction === "Building..."
+                {loadingAction ===
+                "Building..."
                   ? "Building..."
+                  : loadingAction ===
+                    "Preparing changes..."
+                  ? "Preparing..."
+                  : mode === "safe"
+                  ? "Review with AI"
                   : "Build with AI"}
 
                 <span className="build-arrow">
                   →
                 </span>
               </button>
-
             </div>
 
             <div className="agent-status-line">
@@ -1148,44 +1369,44 @@ function App() {
 
               <span>
                 {loading
-                  ? loadingAction || "AI is working..."
+                  ? loadingAction ||
+                    "AI is working..."
                   : statusMessage}
               </span>
             </div>
-
           </section>
 
           <div className="dashboard-grid">
-
             <section className="panel context-panel">
-
               <div className="panel-header">
-
                 <div>
                   <span className="eyebrow">
                     CONTEXT
                   </span>
 
-                  <h2>AI Context</h2>
+                  <h2>
+                    AI Context
+                  </h2>
                 </div>
 
                 <span className="panel-count">
                   {contextFiles.length}
                 </span>
-
               </div>
 
               <div className="context-selected">
-
                 <div className="context-icon">
                   ▱
                 </div>
 
                 <div className="context-info">
-
                   <strong>
                     {selectedFile
-                      ? selectedFile.split(/[\\/]+/).pop()
+                      ? selectedFile
+                          .split(
+                            /[\\/]+/
+                          )
+                          .pop()
                       : "No file selected"}
                   </strong>
 
@@ -1194,87 +1415,133 @@ function App() {
                       ? "Selected project file"
                       : "Choose a file from the explorer"}
                   </span>
-
                 </div>
 
                 <button
                   className="mini-button"
-                  onClick={handleAddContext}
-                  disabled={!selectedFile || loading}
+                  onClick={
+                    handleAddContext
+                  }
+                  disabled={
+                    !selectedFile ||
+                    loading
+                  }
                 >
                   Add
                 </button>
-
               </div>
 
-              {contextFiles.length > 0 && (
+              {contextFiles.length >
+                0 && (
                 <div className="context-list">
-
-                  {contextFiles.map((file) => (
-                    <div
-                      className="context-chip"
-                      key={file.path}
-                    >
-                      <span>✓</span>
-                      {file.path}
-                    </div>
-                  ))}
-
+                  {contextFiles.map(
+                    (file) => (
+                      <div
+                        className="context-chip"
+                        key={file.path}
+                      >
+                        <span>✓</span>
+                        {file.path}
+                      </div>
+                    )
+                  )}
                 </div>
               )}
-
             </section>
 
             <section className="panel smart-panel">
-
               <div className="panel-header">
-
                 <div>
                   <span className="eyebrow">
                     INTELLIGENCE
                   </span>
 
-                  <h2>Smart Context</h2>
+                  <h2>
+                    Smart Context
+                  </h2>
                 </div>
 
                 <span className="ai-badge">
                   AI
                 </span>
-
               </div>
 
               <p className="panel-description">
-                Let VibeCoder identify the project files
-                most relevant to your request.
+                Let VibeCoder identify the
+                project files most relevant
+                to your request.
               </p>
 
               <button
                 className="smart-context-button"
-                onClick={handleSmartContext}
-                disabled={loading || !prompt.trim()}
+                onClick={
+                  handleSmartContext
+                }
+                disabled={
+                  loading ||
+                  !prompt.trim()
+                }
               >
                 <span>✦</span>
                 Find Relevant Files
               </button>
 
-              {smartContextFiles.length > 0 && (
+              {smartContextFiles.length >
+                0 && (
                 <div className="smart-results">
-
                   {smartContextFiles.map(
-                    (file, index) => (
+                    (
+                      file,
+                      index
+                    ) => (
                       <button
                         className="smart-result"
-                        key={`${file.path}-${index}`}
-                        onClick={() =>
-                          handleSelectFile(file.path)
-                        }
+                        key={normalizeContextPath(
+                          file.path
+                        )}
+                        onClick={async () => {
+  await handleSelectFile(file.path);
+
+  const alreadyAdded = contextFiles.some(
+    (item) =>
+      normalizeContextPath(item.path) ===
+      normalizeContextPath(file.path)
+  );
+
+  if (!alreadyAdded) {
+    try {
+      const response = await fetch(
+        `http://localhost:3001/api/project/file?path=${encodeURIComponent(file.path)}`
+      );
+
+      const data = await response.json();
+
+      if (data.content) {
+        setContextFiles((current) => [
+          ...current,
+          {
+            path: file.path,
+            name: getItemName(file.path),
+            content: data.content,
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error("Failed to add Smart Context file:", error);
+    }
+  }
+}}
                       >
                         <span className="result-number">
-                          0{index + 1}
+                          {String(
+                            index + 1
+                          ).padStart(
+                            2,
+                            "0"
+                          )}
                         </span>
 
                         <span className="result-content">
-
                           <strong>
                             {file.name ||
                               file.path}
@@ -1284,7 +1551,6 @@ function App() {
                             {file.reason ||
                               "Relevant to your request"}
                           </span>
-
                         </span>
 
                         {typeof file.score ===
@@ -1293,66 +1559,61 @@ function App() {
                             {file.score}
                           </span>
                         )}
-
                       </button>
                     )
                   )}
-
                 </div>
               )}
-
             </section>
-
           </div>
 
           <section className="panel full-panel">
-
             <div className="panel-header">
-
               <div>
                 <span className="eyebrow">
                   AGENT WORKFLOW
                 </span>
 
-                <h2>Agent Plan</h2>
+                <h2>
+                  Agent Plan
+                </h2>
               </div>
 
               <span className="panel-count">
                 {agentPlan.length}
               </span>
-
             </div>
 
             {agentPlan.length > 0 ? (
               <div className="plan-list">
+                {agentPlan.map(
+                  (
+                    step,
+                    index
+                  ) => (
+                    <div
+                      className="plan-step"
+                      key={index}
+                    >
+                      <div className="step-number">
+                        {step.step ||
+                          index + 1}
+                      </div>
 
-                {agentPlan.map((step, index) => (
-                  <div
-                    className="plan-step"
-                    key={index}
-                  >
+                      <div className="step-content">
+                        <strong>
+                          {step.title ||
+                            `Step ${index + 1}`}
+                        </strong>
 
-                    <div className="step-number">
-                      {step.step || index + 1}
+                        <span>
+                          {step.description ||
+                            "Agent workflow step"}
+                        </span>
+                      </div>
                     </div>
-
-                    <div className="step-content">
-
-                      <strong>
-                        {step.title ||
-                          `Step ${index + 1}`}
-                      </strong>
-
-                      <span>
-                        {step.description ||
-                          "Agent workflow step"}
-                      </span>
-
-                    </div>
-
-                  </div>
-                ))}
-
+                  )
+                )}
               </div>
             ) : (
               <div className="empty-state">
@@ -1364,39 +1625,37 @@ function App() {
                   </strong>
 
                   <p>
-                    Use Agent Plan to turn your request
-                    into a structured workflow.
+                    Use Agent Plan to turn
+                    your request into a
+                    structured workflow.
                   </p>
                 </div>
-
               </div>
             )}
-
           </section>
 
           <section className="panel full-panel">
-
             <div className="panel-header">
-
               <div>
                 <span className="eyebrow">
                   DIAGNOSTICS
                 </span>
 
-                <h2>Debugging Agent</h2>
+                <h2>
+                  Debugging Agent
+                </h2>
               </div>
 
               <span className="panel-count">
-                {debugResult ? "READY" : "—"}
+                {debugResult
+                  ? "READY"
+                  : "—"}
               </span>
-
             </div>
 
             {debugResult ? (
               <div className="debug-content">
-
                 <div className="debug-card problem">
-
                   <span className="debug-label">
                     PROBLEM
                   </span>
@@ -1404,11 +1663,9 @@ function App() {
                   <strong>
                     {debugResult.problem}
                   </strong>
-
                 </div>
 
                 <div className="debug-card">
-
                   <span className="debug-label">
                     WHY
                   </span>
@@ -1416,11 +1673,9 @@ function App() {
                   <p>
                     {debugResult.why}
                   </p>
-
                 </div>
 
                 <div className="debug-card">
-
                   <span className="debug-label">
                     SUGGESTED FIX
                   </span>
@@ -1428,11 +1683,9 @@ function App() {
                   <p>
                     {debugResult.fix}
                   </p>
-
                 </div>
 
                 <div className="confidence-card">
-
                   <span>
                     CONFIDENCE
                   </span>
@@ -1440,13 +1693,10 @@ function App() {
                   <strong>
                     {debugResult.confidence}
                   </strong>
-
                 </div>
-
               </div>
             ) : (
               <div className="empty-state">
-
                 <span>⌁</span>
 
                 <div>
@@ -1455,77 +1705,118 @@ function App() {
                   </strong>
 
                   <p>
-                    Select a project file and run the
-                    Debug action to analyze it.
+                    Select a project file and
+                    run the Debug action to
+                    analyze it.
                   </p>
                 </div>
-
               </div>
             )}
-
           </section>
 
           <section className="panel full-panel">
-
             <div className="panel-header">
-
               <div>
                 <span className="eyebrow">
                   CONTROLLED EDITING
                 </span>
 
-                <h2>Proposed Changes</h2>
+                <h2>
+                  Proposed Changes
+                </h2>
               </div>
 
               <span className="panel-count">
                 {proposedChanges.length}
               </span>
-
             </div>
 
             {proposedChanges.length > 0 ? (
-              <div className="changes-list">
+              <div>
+                <div className="changes-list">
+                  {proposedChanges.map(
+                    (
+                      change,
+                      index
+                    ) => (
+                      <div
+                        className="change-card"
+                        key={`${change.path}-${index}`}
+                      >
+                        <div className="change-top">
+                          <span className="change-action">
+                            REVIEW
+                          </span>
 
-                {proposedChanges.map(
-                  (change, index) => (
-                    <div
-                      className="change-card"
-                      key={index}
-                    >
+                          <strong>
+                            {change.path ||
+                              "Unknown file"}
+                          </strong>
+                        </div>
 
-                      <div className="change-top">
+                        <p>
+                          {change.description ||
+                            "Controlled change proposed by AI."}
+                        </p>
 
-                        <span className="change-action">
-                          {change.action ||
-                            "MODIFY"}
-                        </span>
+                        <details>
+                          <summary>
+                            View original file
+                          </summary>
 
-                        <strong>
-                          {change.path ||
-                            "Unknown file"}
-                        </strong>
+                          <pre className="code-output">
+                            {change.oldContent}
+                          </pre>
+                        </details>
 
+                        <details open>
+                          <summary>
+                            View proposed version
+                          </summary>
+
+                          <pre className="code-output">
+                            {change.newContent}
+                          </pre>
+                        </details>
                       </div>
+                    )
+                  )}
+                </div>
 
-                      <p>
-                        {change.reason ||
-                          "Controlled change proposed by AI."}
-                      </p>
+                <div
+                  style={{
+                    marginTop: "18px",
+                    display: "flex",
+                    justifyContent:
+                      "flex-end",
+                  }}
+                >
+                  <button
+                    className="build-button"
+                    onClick={
+                      handleApplyChanges
+                    }
+                    disabled={
+                      loading ||
+                      applyingChanges
+                    }
+                  >
+                    <span className="build-icon">
+                      ✓
+                    </span>
 
-                      {change.content && (
-                        <pre className="code-output">
-                          {change.content}
-                        </pre>
-                      )}
+                    {applyingChanges
+                      ? "Applying..."
+                      : "Approve & Apply Changes"}
 
-                    </div>
-                  )
-                )}
-
+                    <span className="build-arrow">
+                      →
+                    </span>
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="empty-state">
-
                 <span>◇</span>
 
                 <div>
@@ -1534,32 +1825,30 @@ function App() {
                   </strong>
 
                   <p>
-                    VibeCoder will show proposed file
-                    changes here before they are applied.
+                    Safe Mode will show proposed
+                    file changes here before
+                    anything is applied.
                   </p>
                 </div>
-
               </div>
             )}
-
           </section>
 
           <section className="panel full-panel response-panel">
-
             <div className="panel-header">
-
               <div>
                 <span className="eyebrow">
                   LOCAL AI OUTPUT
                 </span>
 
-                <h2>AI Response</h2>
+                <h2>
+                  AI Response
+                </h2>
               </div>
 
               <span className="live-badge">
                 ● LIVE
               </span>
-
             </div>
 
             {aiResponse ? (
@@ -1568,7 +1857,6 @@ function App() {
               </pre>
             ) : (
               <div className="empty-state response-empty">
-
                 <div className="response-orb">
                   ✦
                 </div>
@@ -1579,21 +1867,18 @@ function App() {
                   </strong>
 
                   <p>
-                    Enter a request above and build
-                    with your local coding model.
+                    Enter a request above and
+                    build with your local
+                    coding model.
                   </p>
                 </div>
-
               </div>
             )}
-
           </section>
 
           {selectedFile && (
             <section className="panel full-panel file-preview-panel">
-
               <div className="panel-header">
-
                 <div>
                   <span className="eyebrow">
                     FILE INSPECTOR
@@ -1607,21 +1892,16 @@ function App() {
                 <span className="panel-count">
                   SOURCE
                 </span>
-
               </div>
 
               <pre className="code-output">
                 {selectedFileContent ||
                   "No file content available."}
               </pre>
-
             </section>
           )}
-
         </section>
-
       </main>
-
     </div>
   );
 }
