@@ -16,7 +16,7 @@ const OLLAMA_MODEL =
 
 const PROJECT_ROOT =
   path.resolve(__dirname, "..");
-
+ 
 const IGNORED_NAMES = new Set([
   "node_modules",
   ".git",
@@ -413,23 +413,39 @@ app.get(
 
 app.get(
   "/api/project",
-  (req, res) => {
+  async (req, res) => {
     try {
-      const structure =
-        buildProjectTree(
-          PROJECT_ROOT
+      const response = await fetch(
+        "https://api.github.com/repos/areejsaqib/VibeCoder-EDU/git/trees/master?recursive=1"
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load project from GitHub."
         );
+      }
+
+      const data = await response.json();
+
+      const files = data.tree
+        .filter((item) => item.type === "blob")
+        .map((item) => ({
+          name: item.path.split("/").pop(),
+          path: item.path,
+          type: "file",
+        }));
 
       res.json({
-        files: structure,
-        structure,
+        files,
+        structure: files,
       });
     } catch (error) {
       console.error(error);
 
       res.status(500).json({
         message:
-          "Unable to scan project.",
+          error.message ||
+          "Unable to load project.",
       });
     }
   }

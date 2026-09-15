@@ -287,9 +287,9 @@ if (!response.ok) {
     setStatusMessage("Scanning your project structure...");
 
     try {
-      const response = await fetch(
-        "http://vibecoder-edu-backend.vercel.app/api/project"
-      );
+     const response = await fetch(
+  `${API_BASE_URL}/api/project`
+);
 
       if (!response.ok) {
         throw new Error("Unable to open project.");
