@@ -1,7 +1,10 @@
+
 import { useState } from "react";
 import type { ReactElement } from "react";
 import "./App.css";
-const API_BASE_URL = "https://vibecoder-edu-backend.vercel.app";
+
+const API_BASE_URL = "https://vibecoder-edu-production.up.railway.app";
+
 type Mode = "vibe" | "education" | "safe";
 
 type ProjectItem =
@@ -134,12 +137,12 @@ function App() {
 
     try {
       const response = await fetch(
-  `${API_BASE_URL}/api/project/file?path=${encodeURIComponent(
-    filePath
-  )}`
-);
+        `${API_BASE_URL}/api/project/file?path=${encodeURIComponent(
+          filePath
+        )}`
+      );
 
-if (!response.ok) {
+      if (!response.ok) {
         throw new Error("Unable to read file.");
       }
 
@@ -267,15 +270,18 @@ if (!response.ok) {
           "SUGGESTED FIX",
           "CONFIDENCE",
         ]) || "No definite problem identified.",
+
       why:
         getSection("WHY", [
           "SUGGESTED FIX",
           "CONFIDENCE",
         ]) || "No explanation available.",
+
       fix:
         getSection("SUGGESTED FIX", [
           "CONFIDENCE",
         ]) || "No fix suggested.",
+
       confidence:
         getSection("CONFIDENCE", []) || "unknown",
     };
@@ -287,9 +293,9 @@ if (!response.ok) {
     setStatusMessage("Scanning your project structure...");
 
     try {
-     const response = await fetch(
-  `${API_BASE_URL}/api/project`
-);
+      const response = await fetch(
+        `${API_BASE_URL}/api/project`
+      );
 
       if (!response.ok) {
         throw new Error("Unable to open project.");
@@ -338,7 +344,7 @@ if (!response.ok) {
     try {
       const response = await fetch(
         `${API_BASE_URL}/api/project/file?path=` +
-  encodeURIComponent(selectedFile)
+          encodeURIComponent(selectedFile)
       );
 
       if (!response.ok) {
@@ -456,12 +462,15 @@ if (!response.ok) {
                 : typeof file.name === "string"
                 ? file.name.trim()
                 : "",
+
             name:
               file.name ||
               file.path ||
               file.relativePath ||
               "Unnamed",
+
             score: file.score,
+
             reason:
               file.reason ||
               "Relevant to your request",
@@ -472,17 +481,6 @@ if (!response.ok) {
             file.path.trim().length > 0
         );
 
-      /*
-       * Smart Context can receive the same file more than once
-       * from the backend with slightly different path formatting.
-       *
-       * We normalize the path before comparing:
-       * - removes surrounding spaces
-       * - converts Windows "\" to "/"
-       * - removes "./" and leading "/"
-       * - removes repeated "/"
-       * - compares case-insensitively
-       */
       const seenPaths = new Set<string>();
 
       const uniqueFiles = normalized.filter((file) => {
@@ -584,9 +582,11 @@ if (!response.ok) {
             step:
               step.step ||
               index + 1,
+
             title:
               step.title ||
               `Step ${index + 1}`,
+
             description:
               step.description ||
               "Agent workflow step",
@@ -662,12 +662,15 @@ if (!response.ok) {
           problem:
             data.result.problem ||
             "No definite problem identified.",
+
           why:
             data.result.why ||
             "No explanation available.",
+
           fix:
             data.result.fix ||
             "No fix suggested.",
+
           confidence:
             data.result.confidence ||
             "unknown",
@@ -690,12 +693,15 @@ if (!response.ok) {
           problem:
             data.problem ||
             "No definite problem identified.",
+
           why:
             data.why ||
             "No explanation available.",
+
           fix:
             data.fix ||
             "No fix suggested.",
+
           confidence:
             data.confidence ||
             "unknown",
@@ -704,10 +710,13 @@ if (!response.ok) {
         parsedDebug = {
           problem:
             "No definite problem identified.",
+
           why:
             "No explanation available.",
+
           fix:
             "No fix suggested.",
+
           confidence:
             "unknown",
         };
@@ -761,13 +770,14 @@ if (!response.ok) {
     setLoadingAction(
       "Preparing changes..."
     );
+
     setStatusMessage(
       "Agent is preparing controlled changes..."
     );
 
     try {
       const response = await fetch(
-       `${API_BASE_URL}/api/agent/changes`,
+        `${API_BASE_URL}/api/agent/changes`,
         {
           method: "POST",
           headers: {
@@ -1029,7 +1039,7 @@ if (!response.ok) {
     <div
       className={`app ${
         mode === "safe"
-          ? "vibecoder-safe-dark-mode"
+          ? "vibecoder-safe-dark-blue"
           : ""
       }`}
     >
@@ -1055,7 +1065,13 @@ if (!response.ok) {
 
         <div className="topbar-right">
           <div className="agent-status">
-            Local AI Online
+            <span className="status-dot"></span>
+
+            <span>
+              {loading
+                ? "AI Working"
+                : "Local AI Online"}
+            </span>
           </div>
 
           <div className="version-badge">
@@ -1244,7 +1260,12 @@ if (!response.ok) {
               </div>
 
               <div className="builder-orb">
-                <span>AI</span>
+                <div className="vibe-core">
+                  <span className="core-ring ring-one"></span>
+                  <span className="core-ring ring-two"></span>
+                  <span className="core-glow"></span>
+                  <span className="core-letter">✦</span>
+                </div>
               </div>
             </div>
 
@@ -1500,37 +1521,56 @@ if (!response.ok) {
                           file.path
                         )}
                         onClick={async () => {
-  await handleSelectFile(file.path);
+                          await handleSelectFile(
+                            file.path
+                          );
 
-  const alreadyAdded = contextFiles.some(
-    (item) =>
-      normalizeContextPath(item.path) ===
-      normalizeContextPath(file.path)
-  );
+                          const alreadyAdded =
+                            contextFiles.some(
+                              (item) =>
+                                normalizeContextPath(
+                                  item.path
+                                ) ===
+                                normalizeContextPath(
+                                  file.path
+                                )
+                            );
 
-  if (!alreadyAdded) {
-    try {
-      const response = await fetch(
-  `${API_BASE_URL}/api/project/file?path=${encodeURIComponent(file.path)}`
-);
+                          if (!alreadyAdded) {
+                            try {
+                              const response =
+                                await fetch(
+                                  `${API_BASE_URL}/api/project/file?path=${encodeURIComponent(
+                                    file.path
+                                  )}`
+                                );
 
-      const data = await response.json();
+                              const data =
+                                await response.json();
 
-      if (data.content) {
-        setContextFiles((current) => [
-          ...current,
-          {
-            path: file.path,
-            name: getItemName(file.path),
-            content: data.content,
-          },
-        ]);
-      }
-    } catch (error) {
-      console.error("Failed to add Smart Context file:", error);
-    }
-  }
-}}
+                              if (data.content) {
+                                setContextFiles(
+                                  (current) => [
+                                    ...current,
+                                    {
+                                      path: file.path,
+                                      name: getItemName(
+                                        file.path
+                                      ),
+                                      content:
+                                        data.content,
+                                    },
+                                  ]
+                                );
+                              }
+                            } catch (error) {
+                              console.error(
+                                "Failed to add Smart Context file:",
+                                error
+                              );
+                            }
+                          }
+                        }}
                       >
                         <span className="result-number">
                           {String(
