@@ -1,6 +1,12 @@
 require("dotenv").config({ path: __dirname + "/.env" });
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-console.log("Gemini API key loaded:", Boolean(process.env.GEMINI_API_KEY));
+
+console.log(
+  "Gemini API key loaded:",
+  Boolean(GEMINI_API_KEY)
+);
+
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -8,15 +14,22 @@ const path = require("path");
 
 const app = express();
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 const OLLAMA_URL =
   "http://localhost:11434/api/generate";
+
 const OLLAMA_MODEL =
   "qwen2.5-coder:3b-instruct";
 
+const GEMINI_MODEL =
+  "gemini-3.7-flash";
+
+const GEMINI_URL =
+  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
 const PROJECT_ROOT =
   path.resolve(__dirname, "..");
- 
+
 const IGNORED_NAMES = new Set([
   "node_modules",
   ".git",
@@ -30,6 +43,7 @@ const IGNORED_NAMES = new Set([
 ]);
 
 app.use(cors());
+
 app.use(
   express.json({
     limit: "2mb",
@@ -49,22 +63,17 @@ function normalizePath(value = "") {
 }
 
 function canonicalPath(value = "") {
-  return normalizePath(value)
-    .toLowerCase();
+  return normalizePath(value).toLowerCase();
 }
 
-function getFullProjectPath(
-  relativePath = ""
-) {
+function getFullProjectPath(relativePath = "") {
   return path.resolve(
     PROJECT_ROOT,
     normalizePath(relativePath)
   );
 }
 
-function isSafeProjectPath(
-  relativePath = ""
-) {
+function isSafeProjectPath(relativePath = "") {
   const normalized =
     normalizePath(relativePath);
 
@@ -91,9 +100,7 @@ function isSafeProjectPath(
   );
 }
 
-function getProjectRelativePath(
-  fullPath
-) {
+function getProjectRelativePath(fullPath) {
   return normalizePath(
     path.relative(
       PROJECT_ROOT,
@@ -184,9 +191,7 @@ function buildProjectTree(
    PROJECT FILE READING
 ========================================================= */
 
-function readProjectFile(
-  relativePath
-) {
+function readProjectFile(relativePath) {
   if (
     !isSafeProjectPath(
       relativePath
@@ -228,56 +233,208 @@ function readProjectFile(
     "utf8"
   );
 }
+
+/* =========================================================
+   SMALL ASYNC HELPER
+========================================================= */
+
+function sleep(ms) {
+  return new Promise(
+    (resolve) =>
+      setTimeout(resolve, ms)
+  );
+}
+
 /* =========================================================
    GEMINI
 ========================================================= */
 
-async function callGemini(prompt, systemPrompt = "") {
+/*
+  Gemini is our primary AI provider.
+
+  Important improvements:
+  - Retries temporary provider errors.
+  - JSON response mode is optional.
+  - Normal chat/debug requests are NOT forced into JSON.
+  - If Gemini remains unavailable, Ollama can be used as
+    a local fallback.
+*/
+
+async function callGemini(
+  prompt,
+  systemPrompt = "",
+  options = {}
+) {
   if (!GEMINI_API_KEY) {
-    throw new Error("Gemini API key is not configured.");
-  }
-
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemPrompt }],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }],
-          },
-        ],
-      }),
-    }
-  );
-
-  if (!response.ok) {
-  const errorText = await response.text();
-
-  if (response.status === 503) {
     throw new Error(
-      "Gemini is temporarily busy. Please try again in a moment."
+      "Gemini API key is not configured."
     );
   }
 
-  throw new Error(
-    `Gemini API error: ${response.status} ${errorText}`
-  );
-}
+  const wantsJson =
+    Boolean(options.json);
 
-  const data = await response.json();
+  const maxAttempts = 3;
 
-  return (
-    data.candidates?.[0]?.content?.parts?.[0]?.text ||
-    "Gemini returned no response."
+  let lastError = null;
+
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
+  ) {
+    try {
+      const generationConfig = {
+        temperature:
+          options.temperature ?? 0.2,
+      };
+
+      if (wantsJson) {
+        generationConfig.responseMimeType =
+          "application/json";
+      }
+
+      const body = {
+        systemInstruction: {
+          parts: [
+            {
+              text:
+                systemPrompt ||
+                "You are VibeCoder EDU, a helpful coding assistant.",
+            },
+          ],
+        },
+
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: prompt,
+              },
+            ],
+          },
+        ],
+
+        generationConfig,
+      };
+
+      const response =
+        await fetch(
+          GEMINI_URL,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+
+              "x-goog-api-key":
+                GEMINI_API_KEY,
+            },
+
+            body: JSON.stringify(body),
+          }
+        );
+
+      if (response.ok) {
+        const data =
+          await response.json();
+
+        const text =
+          data.candidates?.[0]
+            ?.content?.parts?.[0]
+            ?.text;
+
+        if (text) {
+          return text;
+        }
+
+        throw new Error(
+          "Gemini returned no response."
+        );
+      }
+
+      const errorText =
+        await response.text();
+
+      console.error(
+        `Gemini API error ${response.status}:`,
+        errorText
+      );
+
+      const retryableStatuses =
+        new Set([
+          429,
+          502,
+          503,
+          504,
+        ]);
+
+      if (
+        retryableStatuses.has(
+          response.status
+        )
+      ) {
+        lastError =
+          new Error(
+            `Gemini temporary error ${response.status}: ${errorText}`
+          );
+
+        if (
+          attempt < maxAttempts
+        ) {
+          const delay =
+            1000 *
+            Math.pow(
+              2,
+              attempt - 1
+            );
+
+          console.log(
+            `Gemini temporary error (${response.status}). Retrying in ${delay}ms...`
+          );
+
+          await sleep(delay);
+
+          continue;
+        }
+
+        break;
+      }
+
+      throw new Error(
+        `Gemini API error: ${response.status} ${errorText}`
+      );
+    } catch (error) {
+      lastError = error;
+
+      if (
+        attempt < maxAttempts
+      ) {
+        const delay =
+          1000 *
+          Math.pow(
+            2,
+            attempt - 1
+          );
+
+        console.log(
+          `Gemini request failed. Retrying in ${delay}ms...`
+        );
+
+        await sleep(delay);
+
+        continue;
+      }
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error(
+      "Gemini request failed."
+    )
   );
 }
 /* =========================================================
@@ -286,26 +443,46 @@ async function callGemini(prompt, systemPrompt = "") {
 
 async function callOllama(
   prompt,
-  systemPrompt = ""
+  systemPrompt = "",
+  options = {}
 ) {
   const response =
     await fetch(
       OLLAMA_URL,
       {
         method: "POST",
+
         headers: {
           "Content-Type":
             "application/json",
         },
+
         body: JSON.stringify({
-          model: OLLAMA_MODEL,
+          model:
+            OLLAMA_MODEL,
+
           prompt,
-          system: systemPrompt,
+
+          system:
+            systemPrompt,
+
           stream: false,
+
+          format:
+            options.json
+              ? "json"
+              : undefined,
+
           options: {
-            temperature: 0.2,
-            num_predict: 500,
+            temperature:
+              options.temperature ??
+              0.2,
+
+            num_predict:
+              options.numPredict ??
+              600,
           },
+
           keep_alive: "10m",
         }),
       }
@@ -325,14 +502,73 @@ async function callOllama(
 
   return data.response || "";
 }
+/* =========================================================
+   AI WITH LOCAL FALLBACK
+========================================================= */
+async function callAI(
+  prompt,
+  systemPrompt = "",
+  options = {}
+) {
+  try {
+    return await callGemini(
+      prompt,
+      systemPrompt,
+      options
+    );
+  } catch (geminiError) {
+    console.error(
+      "Gemini unavailable:",
+      geminiError.message
+    );
+
+    /*
+      Only use Ollama after Gemini has exhausted
+      its retry attempts.
+
+      This keeps the application usable even when
+      Gemini temporarily returns 503/429/etc.
+    */
+    try {
+      console.log(
+        "Falling back to local Ollama..."
+      );
+
+      return await callOllama(
+        prompt,
+        systemPrompt,
+        {
+          temperature:
+            options.temperature ??
+            0.2,
+
+          numPredict:
+  options.json
+    ? 1200
+    : 600,
+
+json:
+  options.json ?? false,
+        }
+      );
+    } catch (ollamaError) {
+      console.error(
+        "Ollama fallback failed:",
+        ollamaError.message
+      );
+
+      throw new Error(
+        `AI service unavailable. Gemini: ${geminiError.message} Ollama: ${ollamaError.message}`
+      );
+    }
+  }
+}
 
 /* =========================================================
    JSON EXTRACTION
 ========================================================= */
 
-function extractJson(
-  text = ""
-) {
+function extractJson(text = "") {
   const cleaned =
     String(text)
       .replace(
@@ -415,9 +651,10 @@ app.get(
   "/api/project",
   async (req, res) => {
     try {
-      const response = await fetch(
-        "https://api.github.com/repos/areejsaqib/VibeCoder-EDU/git/trees/master?recursive=1"
-      );
+      const response =
+        await fetch(
+          "https://api.github.com/repos/areejsaqib/VibeCoder-EDU/git/trees/master?recursive=1"
+        );
 
       if (!response.ok) {
         throw new Error(
@@ -425,19 +662,31 @@ app.get(
         );
       }
 
-      const data = await response.json();
+      const data =
+        await response.json();
 
-      const files = data.tree
-        .filter((item) => item.type === "blob")
-        .map((item) => ({
-          name: item.path.split("/").pop(),
-          path: item.path,
-          type: "file",
-        }));
+      const files =
+        data.tree
+          .filter(
+            (item) =>
+              item.type === "blob"
+          )
+          .map((item) => ({
+            name:
+  item.path
+    .split("/")
+    .pop(),
+
+            path: item.path,
+
+            type: "file",
+          }));
 
       res.json({
         files,
-        structure: files,
+
+        structure:
+          files,
       });
     } catch (error) {
       console.error(error);
@@ -466,9 +715,11 @@ app.get(
         );
 
       res.json({
-        path: normalizePath(
-          filePath
-        ),
+        path:
+          normalizePath(
+            filePath
+          ),
+
         content,
       });
     } catch (error) {
@@ -535,18 +786,22 @@ function getSmartContextIntent(
       isRequestAboutStyling(
         prompt
       ),
+
     react:
       isRequestAboutReact(
         prompt
       ),
+
     backend:
       isRequestAboutBackend(
         prompt
       ),
+
     logic:
       isRequestAboutLogic(
         prompt
       ),
+
     config:
       isRequestAboutConfig(
         prompt
@@ -567,6 +822,7 @@ function scoreFile(
     );
 
   let score = 0;
+
   const reasons = [];
 
   if (
@@ -652,6 +908,7 @@ function scoreFile(
 
   return {
     score,
+
     reason:
       reasons.join(", ") ||
       "Relevant project source file",
@@ -659,19 +916,10 @@ function scoreFile(
 }
 
 /*
-  IMPORTANT:
-  This function now guarantees that every
-  project file appears only once.
-
-  Even if the filesystem somehow produces
-  equivalent paths such as:
-
-    src/App.css
-    src\\App.css
-    /src/App.css
-
-  they all become one canonical entry.
+  Guarantees every project file appears
+  only once.
 */
+
 function collectProjectFiles(
   currentPath,
   relativeBase = "",
@@ -681,17 +929,21 @@ function collectProjectFiles(
   let entries = [];
 
   try {
-    entries = fs.readdirSync(
-      currentPath,
-      {
-        withFileTypes: true,
-      }
-    );
+    entries =
+      fs.readdirSync(
+        currentPath,
+        {
+          withFileTypes:
+            true,
+        }
+      );
   } catch {
     return result;
   }
 
-  for (const entry of entries) {
+  for (
+    const entry of entries
+  ) {
     if (
       IGNORED_NAMES.has(
         entry.name
@@ -714,7 +966,9 @@ function collectProjectFiles(
         )
       );
 
-    if (entry.isDirectory()) {
+    if (
+      entry.isDirectory()
+    ) {
       collectProjectFiles(
         absolutePath,
         relativePath,
@@ -730,7 +984,9 @@ function collectProjectFiles(
         relativePath
       );
 
-    if (seen.has(key)) {
+    if (
+      seen.has(key)
+    ) {
       continue;
     }
 
@@ -754,7 +1010,8 @@ app.post(
     try {
       const prompt =
         String(
-          req.body?.prompt || ""
+          req.body?.prompt ||
+            ""
         ).trim();
 
       if (!prompt) {
@@ -763,9 +1020,10 @@ app.post(
         });
       }
 
-      const response = await fetch(
-        "https://api.github.com/repos/areejsaqib/VibeCoder-EDU/git/trees/master?recursive=1"
-      );
+      const response =
+        await fetch(
+          "https://api.github.com/repos/areejsaqib/VibeCoder-EDU/git/trees/master?recursive=1"
+        );
 
       if (!response.ok) {
         throw new Error(
@@ -780,7 +1038,8 @@ app.post(
         data.tree
           .filter(
             (item) =>
-              item.type === "blob"
+              item.type ===
+              "blob"
           )
           .map(
             (item) =>
@@ -812,11 +1071,17 @@ app.post(
               );
 
             return {
-              path: normalizedPath,
-              name: path.basename(
-                normalizedPath
-              ),
-              score: result.score,
+              path:
+                normalizedPath,
+
+              name:
+                path.basename(
+                  normalizedPath
+                ),
+
+              score:
+                result.score,
+
               reason:
                 result.reason,
             };
@@ -827,7 +1092,8 @@ app.post(
           )
           .sort(
             (a, b) =>
-              b.score - a.score
+              b.score -
+              a.score
           );
 
       const uniqueSuggestions =
@@ -955,7 +1221,10 @@ function findState(
       /(?:const|let)\s+\w+\s*=\s*(?:useState\([^)]*\)|[^;]+)/g
     ) || [];
 
-  return matches.slice(0, 5);
+  return matches.slice(
+    0,
+    5
+  );
 }
 
 function extractModeRelationships(
@@ -1099,10 +1368,13 @@ function buildRelationshipLesson(
   return [
     "### Teacher Explanation",
     "",
+
     `**Learning goal:** ${educationGoal(
       prompt
     )}`,
+
     "",
+
     relationships.length
       ? `**How the pieces connect:**\n${relationships
           .map(
@@ -1111,7 +1383,9 @@ function buildRelationshipLesson(
           )
           .join("\n")}`
       : "**How the pieces connect:**\n- The selected source does not expose an obvious state relationship for this request yet.",
+
     "",
+
     state.length
       ? `**Relevant state in this file:**\n${state
           .map(
@@ -1120,7 +1394,9 @@ function buildRelationshipLesson(
           )
           .join("\n")}`
       : "**Relevant state:**\n- No obvious React state declaration was found.",
+
     "",
+
     relevant.length
       ? `**Relevant source lines:**\n${relevant
           .map(
@@ -1129,8 +1405,11 @@ function buildRelationshipLesson(
           )
           .join("\n")}`
       : "**Relevant source lines:**\n- No exact matching source lines were found.",
+
     "",
+
     "**Think like a developer:**",
+
     "1. Identify the data being stored.",
     "2. Find the function that changes that data.",
     "3. Find where the data is used to influence the interface.",
@@ -1167,10 +1446,13 @@ function buildEducationLesson(
   return [
     "### Teacher Explanation",
     "",
+
     `**Learning goal:** ${educationGoal(
       prompt
     )}`,
+
     "",
+
     facts.length
       ? `**Key idea:**\n${facts
           .map(
@@ -1179,7 +1461,9 @@ function buildEducationLesson(
           )
           .join("\n")}`
       : "**Key idea:**\n- Start by identifying the main concept in the question, then connect it to a small example.",
+
     "",
+
     relevant.length
       ? `**From your code:**\n${relevant
           .map(
@@ -1188,19 +1472,31 @@ function buildEducationLesson(
           )
           .join("\n")}`
       : "**From your code:**\n- No source code was provided for a source-specific explanation.",
+
     "",
+
     "**Simple example:**",
+
     "```js",
+
     "function addNumbers(a, b) {",
     "  return a + b;",
     "}",
+
     "",
+
     "const result = addNumbers(2, 3);",
+
     "```",
+
     "",
+
     "Here the function receives two inputs, performs the calculation, and returns the result.",
+
     "",
+
     "**Remember:**",
+
     "Understanding the purpose of each piece is more important than memorizing the syntax.",
   ].join("\n");
 }
@@ -1223,15 +1519,22 @@ function buildUiStylingAnalysis(
   return [
     "### UI Analysis",
     "",
+
     `**Request:** ${prompt}`,
+
     "",
+
     "**Recommended approach:**",
+
     "- Identify the component that renders the affected UI.",
     "- Identify the stylesheet controlling its appearance.",
     "- Make the smallest targeted styling change.",
     "- Test the interface after the change.",
+
     "",
+
     "**Safety:**",
+
     "No files were changed by this analysis.",
   ].join("\n");
 }
@@ -1256,7 +1559,9 @@ function buildFileFunctionSummary(
 
   const patterns = [
     /function\s+([A-Za-z_$][\w$]*)\s*\(/g,
+
     /const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/g,
+
     /const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\w+\s*=>/g,
   ];
 
@@ -1285,8 +1590,11 @@ function buildFileFunctionSummary(
   return [
     "### File Analysis",
     "",
+
     `**File:** \`${filePath}\``,
+
     "",
+
     functions.length
       ? `**Functions detected:**\n${functions
           .map(
@@ -1295,11 +1603,17 @@ function buildFileFunctionSummary(
           )
           .join("\n")}`
       : "**Functions detected:**\n- No standard function declarations were detected.",
+
     "",
+
     "**Purpose:**",
+
     "This file contains application logic used by the VibeCoder EDU interface.",
+
     "",
+
     "**Safety:**",
+
     "No files were changed.",
   ].join("\n");
 }
@@ -1332,6 +1646,10 @@ function isBackgroundColorRequest(
   );
 }
 
+/* =========================================================
+   DETERMINISTIC AGENT PLAN
+========================================================= */
+
 function buildDeterministicAgentPlan(
   prompt
 ) {
@@ -1359,32 +1677,44 @@ function buildDeterministicAgentPlan(
   return {
     summary:
       `Create a controlled dark-mode implementation for the request: "${prompt}"`,
+
     steps: [
       {
         step: 1,
+
         title:
           "Inspect the application UI",
+
         description:
           `Review ${appFile} to identify where a theme or dark-mode control should live.`,
       },
+
       {
         step: 2,
+
         title:
           "Add theme state or control",
+
         description:
           `Update ${appFile} with the smallest appropriate state/control needed for dark mode.`,
       },
+
       {
         step: 3,
+
         title:
           "Update visual styles",
+
         description:
           `Update ${cssFile} with dark-mode styling while preserving the existing design.`,
       },
+
       {
         step: 4,
+
         title:
           "Connect and verify",
+
         description:
           "Connect the control to the stylesheet and verify that the interface switches correctly.",
       },
@@ -1402,7 +1732,8 @@ app.post(
     try {
       const prompt =
         String(
-          req.body?.prompt || ""
+          req.body?.prompt ||
+            ""
         ).trim();
 
       const mode =
@@ -1425,6 +1756,12 @@ app.post(
             "Prompt is required.",
         });
       }
+
+      /*
+        Dark-mode planning is deterministic so that
+        a temporary AI outage cannot prevent this
+        predictable planning feature from working.
+      */
 
       if (
         isDarkModeRequest(
@@ -1450,6 +1787,18 @@ app.post(
               )
           )
           .map(normalizePath)
+          .filter(
+            (file, index, array) =>
+              array.findIndex(
+                (item) =>
+                  canonicalPath(
+                    item
+                  ) ===
+                  canonicalPath(
+                    file
+                  )
+              ) === index
+          )
           .slice(0, 3);
 
       const context =
@@ -1479,16 +1828,23 @@ app.post(
       ].join("\n");
 
       const aiResult =
-        await callOllama(
+        await callAI(
           [
             `USER REQUEST:\n${prompt}`,
+
             `MODE:\n${mode}`,
+
             `PROJECT CONTEXT:\n${
               context ||
               "No selected context."
             }`,
           ].join("\n\n"),
-          systemPrompt
+
+          systemPrompt,
+
+          {
+            json: true,
+          }
         );
 
       const parsed =
@@ -1501,11 +1857,14 @@ app.post(
           parsed || {
             summary:
               "AI-generated plan",
+
             steps: [
               {
                 step: 1,
+
                 title:
                   "Analyze request",
+
                 description:
                   aiResult ||
                   "Analyze the requested change.",
@@ -1535,7 +1894,8 @@ app.post(
     try {
       const prompt =
         String(
-          req.body?.prompt || ""
+          req.body?.prompt ||
+            ""
         ).trim();
 
       const selectedFile =
@@ -1568,77 +1928,128 @@ app.post(
           );
       }
 
-      const diagnostics = [];
-
-      if (
-        /\bhandleBuild\b/.test(
-          content
-        )
-      ) {
-        diagnostics.push(
-          "The file contains a build handler."
+      content =
+        content.slice(
+          0,
+          30000
         );
-      }
 
-      if (
-        /fetch\s*\(/.test(
-          content
-        )
-      ) {
-        diagnostics.push(
-          "The file performs a network request."
-        );
-      }
+      const debugPrompt = `
+You are the Debugging Agent inside VibeCoder EDU.
 
-      if (
-        /response\.json\s*\(/.test(
-          content
-        )
-      ) {
-        diagnostics.push(
-          "The file parses JSON responses."
-        );
-      }
+Analyze the selected project file and the user's debugging request.
 
-      if (
-        /try\s*{/.test(
-          content
-        ) &&
-        /catch\s*\(/.test(
-          content
-        )
-      ) {
-        diagnostics.push(
-          "The file contains error handling."
-        );
-      }
+USER REQUEST:
+${prompt || "Find potential bugs or problems in this file."}
 
-      if (
-        /\baiResponse\b/.test(
-          content
-        )
-      ) {
-        diagnostics.push(
-          "The file manages AI response state."
+FILE:
+${selectedFile}
+
+SOURCE CODE:
+${content}
+
+Your job is to identify REAL, specific problems in the code.
+
+Do NOT simply describe what the file contains.
+
+Only report a problem if it is relevant to the user's debugging request.
+
+If the requested area has no clear problem, say:
+"No clear bug found."
+
+Look for:
+- incorrect logic
+- broken conditions
+- incorrect API usage
+- missing error handling
+- state-management problems
+- UI behavior problems
+- possible runtime errors
+- incorrect file paths or endpoints
+- problems caused by the current request
+
+Return exactly this structure:
+
+PROBLEM:
+Describe the most important actual problem you found. If there is no clear bug, say "No clear bug found."
+
+WHY:
+Explain specifically why it is a problem and refer to the relevant code.
+
+SUGGESTED FIX:
+Give a concrete fix. Do not actually modify the file.
+
+CONFIDENCE:
+high, medium, or low
+
+Keep the response concise and based only on the provided source code.
+`;
+
+      const aiResult =
+        await callAI(
+          debugPrompt,
+
+          "",
+
+          {
+            json: false,
+          }
         );
-      }
+
+      const resultText =
+        String(
+          aiResult || ""
+        ).trim();
+
+      const cleanedResultText =
+        resultText
+          .replace(
+            /```json/gi,
+            ""
+          )
+          .replace(
+            /```/g,
+            ""
+          )
+          .trim();
+
+      const problemMatch =
+        cleanedResultText.match(
+          /PROBLEM:\s*([\s\S]*?)(?=\nWHY:|$)/i
+        );
+
+      const whyMatch =
+        cleanedResultText.match(
+          /WHY:\s*([\s\S]*?)(?=\nSUGGESTED FIX:|$)/i
+        );
+
+      const fixMatch =
+        cleanedResultText.match(
+          /SUGGESTED FIX:\s*([\s\S]*?)(?=\nCONFIDENCE:|$)/i
+        );
+
+      const confidenceMatch =
+        cleanedResultText.match(
+          /CONFIDENCE:\s*(high|medium|low)/i
+        );
 
       const result = {
         problem:
-          prompt ||
-          "No specific problem requested.",
+          problemMatch?.[1]?.trim() ||
+          resultText ||
+          "No clear bug found.",
+
         why:
-          diagnostics.length
-            ? diagnostics.join(
-                " "
-              )
-            : "No obvious diagnostic pattern was detected.",
+          whyMatch?.[1]?.trim() ||
+          "The AI could not provide a specific explanation.",
+
         fix:
-          "Review the identified area against the intended behavior and test the affected workflow.",
+          fixMatch?.[1]?.trim() ||
+          "Review the identified code and test the affected workflow.",
+
         confidence:
-          diagnostics.length
-            ? "medium"
-            : "low",
+          confidenceMatch?.[1]?.toLowerCase() ||
+          "medium",
       };
 
       res.json({
@@ -1749,11 +2160,15 @@ function validateControlledChanges(
         }
 
         return {
-          path: filePath,
+          path:
+            filePath,
+
           description:
             change.description,
+
           oldContent:
             change.oldContent,
+
           newContent:
             change.newContent,
         };
@@ -1787,9 +2202,16 @@ function buildDeterministicDarkModeChanges(
 
   const changes = [];
 
+  /*
+    Preserve the existing Safe Mode implementation
+    for explicit dark-blue requests.
+  */
+
   if (
     cssPath &&
-    isDarkBlueRequest(prompt)
+    isDarkBlueRequest(
+      prompt
+    )
   ) {
     const oldContent =
       readProjectFile(
@@ -1824,10 +2246,14 @@ function buildDeterministicDarkModeChanges(
     }
 
     changes.push({
-      path: cssPath,
+      path:
+        cssPath,
+
       description:
         "Add a scoped dark-blue background style without replacing the existing application styles.",
+
       oldContent,
+
       newContent,
     });
 
@@ -1840,45 +2266,38 @@ function buildDeterministicDarkModeChanges(
       let appNewContent =
         appOldContent;
 
+      appNewContent =
+        appNewContent.replace(
+          /mode === "safe"\s*\?\s*"vibecoder-safe-dark-mode"\s*:\s*""/,
+          'mode === "safe"\n          ? "vibecoder-safe-dark-blue"\n          : ""'
+        );
+
       if (
+        appNewContent ===
+          appOldContent &&
         !appNewContent.includes(
           marker
         )
       ) {
-        if (
-          /<div\s+className=\{`app\s*\$\{/.test(
-            appNewContent
-          )
-        ) {
-          appNewContent =
-            appNewContent.replace(
-              /className=\{`app\s*(\$\{[^}]+\})?`/,
-              (
-                match,
-                expression
-              ) => {
-                if (expression) {
-                  return `className={\`app ${marker} ${expression}\`}`;
-                }
-
-                return `className="${marker}"`;
-              }
-            );
-        } else {
-          appNewContent =
-            appNewContent.replace(
-              /<div\s+className="app"/,
-              `<div className="app ${marker}"`
-            );
-        }
+        appNewContent =
+          appNewContent.replace(
+            /className=\{`app\s*\$\{\s*([\s\S]*?)\s*\}\}/,
+            (match, expression) => {
+              return `className={\`app \${${expression}}\`}`;
+            }
+          );
       }
 
       changes.push({
-        path: appPath,
+        path:
+          appPath,
+
         description:
-          "Apply the scoped dark-blue class to the main application container.",
+          "Apply the dark-blue class only while Safe Mode is active.",
+
         oldContent:
           appOldContent,
+
         newContent:
           appNewContent,
       });
@@ -1887,77 +2306,7 @@ function buildDeterministicDarkModeChanges(
     return changes;
   }
 
-  if (cssPath) {
-    const oldContent =
-      readProjectFile(
-        cssPath
-      );
-
-    let newContent =
-      oldContent;
-
-    if (
-      !newContent.includes(
-        "vibecoder-safe-dark-mode"
-      )
-    ) {
-      newContent += `
-
-/* VibeCoder EDU — Safe Mode dark theme */
-.vibecoder-safe-dark-mode {
-  background: #111827;
-  color: #f9fafb;
-}
-
-.vibecoder-safe-dark-mode .panel,
-.vibecoder-safe-dark-mode .builder-card {
-  background: #1f2937;
-  color: #f9fafb;
-}
-`;
-    }
-
-    changes.push({
-      path: cssPath,
-      description:
-        "Add a scoped dark-mode style class without replacing the existing application styles.",
-      oldContent,
-      newContent,
-    });
-  }
-
-  if (appPath) {
-    const oldContent =
-      readProjectFile(
-        appPath
-      );
-
-    let newContent =
-      oldContent;
-
-    if (
-      !newContent.includes(
-        "vibecoder-safe-dark-mode"
-      )
-    ) {
-      newContent =
-        newContent.replace(
-          /return\s*\(\s*<div className="app">/,
-          `return (
-    <div className="app vibecoder-safe-dark-mode">`
-        );
-    }
-
-    changes.push({
-      path: appPath,
-      description:
-        "Apply the new scoped dark-mode class to the main application container.",
-      oldContent,
-      newContent,
-    });
-  }
-
-  return changes;
+  return undefined;
 }
 
 /* =========================================================
@@ -1970,7 +2319,8 @@ app.post(
     try {
       const prompt =
         String(
-          req.body?.prompt || ""
+          req.body?.prompt ||
+            ""
         ).trim();
 
       const contextFiles =
@@ -2022,6 +2372,34 @@ app.post(
         });
       }
 
+      /*
+        Capture the trusted source BEFORE asking AI.
+
+        This snapshot is what Apply Changes will later
+        compare against.
+      */
+
+      const sourceSnapshots =
+        new Map();
+
+      for (
+        const file of safeFiles
+      ) {
+        sourceSnapshots.set(
+          canonicalPath(
+            file
+          ),
+          readProjectFile(
+            file
+          )
+        );
+      }
+
+      /*
+        Known styling requests can still use the
+        deterministic Safe Mode implementation.
+      */
+
       if (
         isDarkModeRequest(
           prompt
@@ -2039,7 +2417,8 @@ app.post(
           );
 
         if (
-          stylingFiles.length > 0
+          stylingFiles.length >
+          0
         ) {
           const deterministic =
             buildDeterministicDarkModeChanges(
@@ -2048,6 +2427,9 @@ app.post(
             );
 
           if (
+            Array.isArray(
+              deterministic
+            ) &&
             deterministic.length
           ) {
             return res.json({
@@ -2058,32 +2440,42 @@ app.post(
         }
       }
 
+      /*
+        Build AI source from the exact same snapshots
+        that Apply will later trust.
+      */
+
       const fileContents =
         safeFiles
           .map((file) => {
-            try {
-              const content =
-                readProjectFile(
+            const content =
+              sourceSnapshots.get(
+                canonicalPath(
                   file
-                );
+                )
+              );
 
-              if (
-                content.length >
-                50 * 1024
-              ) {
-                return [
-                  `FILE: ${file}`,
-                  "CONTENT OMITTED: file is too large for controlled editing.",
-                ].join("\n");
-              }
-
-              return [
-                `FILE: ${file}`,
-                content,
-              ].join("\n");
-            } catch {
+            if (
+              typeof content !==
+              "string"
+            ) {
               return "";
             }
+
+            if (
+              content.length >
+              50 * 1024
+            ) {
+              return [
+                `FILE: ${file}`,
+                "CONTENT OMITTED: file is too large for controlled editing.",
+              ].join("\n");
+            }
+
+            return [
+              `FILE: ${file}`,
+              content,
+            ].join("\n");
           })
           .filter(Boolean)
           .join("\n\n");
@@ -2110,6 +2502,7 @@ app.post(
         "9. Return JSON only.",
         "",
         'Required format: {"changes":[{"path":"exact existing path","description":"what changed","oldContent":"complete original file","newContent":"complete updated file"}]}',
+
         requestedButtonText
           ? `If the request concerns a button, the requested button text is "${requestedButtonText}".`
           : "",
@@ -2118,16 +2511,22 @@ app.post(
         .join("\n");
 
       const aiResult =
-  await callOllama(
-        
+        await callAI(
           [
             `USER REQUEST:\n${prompt}`,
+
             `APPROVED CONTEXT FILES:\n${safeFiles.join(
               "\n"
             )}`,
+
             `PROJECT SOURCE:\n${fileContents}`,
           ].join("\n\n"),
-          systemPrompt
+
+          systemPrompt,
+
+          {
+            json: true,
+          }
         );
 
       const parsed =
@@ -2135,10 +2534,60 @@ app.post(
           aiResult
         );
 
+      console.log(
+        "AI CHANGES RESPONSE:",
+        aiResult
+      );
+if (
+  !parsed ||
+  !Array.isArray(parsed.changes)
+) {
+  console.warn(
+    "AI did not return a valid controlled-change proposal. No files were changed."
+  );
+
+  return res.json({
+    changes: [],
+    message:
+      "No controlled changes were proposed. No files were changed.",
+  });
+}
       const changes =
         validateControlledChanges(
           parsed,
           safeFiles
+        ).map(
+          (change) => {
+            const trustedOriginal =
+              sourceSnapshots.get(
+                canonicalPath(
+                  change.path
+                )
+              );
+
+            if (
+              typeof trustedOriginal !==
+              "string"
+            ) {
+              throw new Error(
+                `Unable to verify original content for ${change.path}.`
+              );
+            }
+
+            return {
+              ...change,
+
+              /*
+                Never trust AI's oldContent.
+
+                Replace it with the exact source
+                snapshot captured by our server.
+              */
+
+              oldContent:
+                trustedOriginal,
+            };
+          }
         );
 
       res.json({
@@ -2233,11 +2682,25 @@ app.post(
             "utf8"
           );
 
+        /*
+          If the file changed after the proposal,
+          refuse to overwrite it.
+
+          Normalize Windows line endings so CRLF/LF
+          differences do not create false mismatches.
+        */
+
         if (
           typeof change.oldContent ===
             "string" &&
-          currentContent !==
-            change.oldContent
+          currentContent.replace(
+            /\r\n/g,
+            "\n"
+          ) !==
+            change.oldContent.replace(
+              /\r\n/g,
+              "\n"
+            )
         ) {
           throw new Error(
             `File changed after proposal was created: ${filePath}. Generate a new proposal first.`
@@ -2257,6 +2720,7 @@ app.post(
 
       res.json({
         success: true,
+
         applied,
       });
     } catch (error) {
@@ -2281,7 +2745,8 @@ app.post(
     try {
       const prompt =
         String(
-          req.body?.prompt || ""
+          req.body?.prompt ||
+            ""
         ).trim();
 
       const mode =
@@ -2318,26 +2783,27 @@ app.post(
         });
       }
 
-      if (mode === "safe") {
+      /*
+        Safe Mode intentionally does not use normal chat.
+      */
+
+      if (
+        mode === "safe"
+      ) {
         return res.json({
           response:
             "Safe Mode uses the controlled review workflow. Use Review with AI to generate proposed changes before anything is applied.",
         });
       }
 
-      if (
-        mode === "vibe" &&
-        isUiStylingRequest(
-          prompt
-        )
-      ) {
-        return res.json({
-          response:
-            buildUiStylingAnalysis(
-              prompt
-            ),
-        });
-      }
+      /*
+        Keep the deterministic UI analysis behavior.
+      */
+
+      
+      /*
+        Keep deterministic file-function analysis.
+      */
 
       if (
         mode === "vibe" &&
@@ -2413,6 +2879,11 @@ app.post(
           .filter(Boolean)
           .join("\n\n");
 
+      /*
+        Education Mode remains teacher-style and
+        source-grounded.
+      */
+
       if (
         mode ===
         "education"
@@ -2431,37 +2902,56 @@ app.post(
         "You are VibeCoder EDU, a local AI coding assistant.",
         "Always prioritize the user's exact request.",
         "Never invent files, functions, APIs, or project details.",
+        "Use only file paths that actually appear in the provided project context.",
         "Never claim to have changed files.",
         "Keep answers beginner-friendly and practical.",
+        "When the user asks to build, add, create, modify, or implement something, respond directly to that request.",
+        "Treat the USER REQUEST as the primary task.",
+"When the user asks for a UI change, identify the existing React file that should be changed and provide the exact code needed for that change.",
+"For small UI changes, provide only the minimal code snippet or exact insertion point needed. Do not rewrite the entire file.",
+"Never change .tsx to .js or invent a different extension.",
+"Do not summarize the project or explain what the files do unless the user explicitly asks for a summary or explanation.",
+"Do not merely summarize or explain the provided project files unless the user explicitly asks for an explanation.",
         "When source code is provided, ground your explanation in that source.",
       ].join("\n");
 
       const aiPrompt = [
-        `USER REQUEST:\n${prompt}`,
-        `MODE:\n${mode}`,
-        selectedFile
-          ? `SELECTED FILE:\n${selectedFile}`
-          : "",
-        sourceContent
-          ? `SELECTED FILE CONTENT:\n${sourceContent}`
-          : "",
-        context
-          ? `PROJECT CONTEXT:\n${context}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+  selectedFile
+    ? `SELECTED FILE:\n${selectedFile}`
+    : "",
+
+  sourceContent
+    ? `SELECTED FILE CONTENT:\n${sourceContent}`
+    : "",
+
+  context
+    ? `PROJECT CONTEXT:\n${context}`
+    : "",
+
+  `USER REQUEST:\n${prompt}`,
+
+  "IMPORTANT: Answer the USER REQUEST directly.",
+  "Do not summarize the project unless the user asks for a summary.",
+  "If the request asks for a change, explain the exact existing file and code change needed.",
+]
+  .filter(Boolean)
+  .join("\n\n");
 
       const responseText =
-        await callGemini(
+        await callAI(
           aiPrompt,
-          systemPrompt
+
+          systemPrompt,
+
+          {
+            json: false,
+          }
         );
 
       res.json({
         response:
           responseText ||
-          "Gemini returned an empty response.",
+          "AI returned an empty response.",
       });
     } catch (error) {
       console.error(error);
@@ -2474,8 +2964,15 @@ app.post(
     }
   }
 );
-app.listen(
+
+/* =========================================================
+   START SERVER
+========================================================= */
+
+
+ app.listen(
   PORT,
+  "0.0.0.0",
   () => {
     console.log(
       `VibeCoder backend running at http://localhost:${PORT}`
@@ -2487,6 +2984,10 @@ app.listen(
 
     console.log(
       `Ollama model: ${OLLAMA_MODEL}`
+    );
+
+    console.log(
+      `Gemini model: ${GEMINI_MODEL}`
     );
   }
 );
